@@ -17,6 +17,14 @@ name: deploy
 on:
   push:
     branches: [main]
+    # Nothing under these paths reaches the Function App package, so a
+    # documentation or SQL change should not spend 3.5 minutes redeploying
+    # bytes that did not change. Use workflow_dispatch to force a deploy.
+    paths-ignore:
+      - 'docs/**'
+      - 'sql/**'
+      - '**/*.md'
+      - 'CONTEXT.md'
   workflow_dispatch:
 
 permissions:

@@ -244,3 +244,28 @@ server farm, so nothing broader is required. The practical consequence is that a
 compromised workflow can redeploy this Function App and nothing else: not the
 storage account, not the App Service plan, and not the unrelated
 `YoutubeTrendingDashboard` sharing the resource group.
+
+## Observability
+
+`az functionapp create` provisions an Application Insights component and, unless
+told otherwise, a Log Analytics workspace in an auto-generated
+`DefaultResourceGroup-<region>`. That workspace was moved to **`law-attractions`
+inside `miscellaneous_projects`**, so every resource this project owns lives in
+one group. Re-pointing the component does not change its instrumentation key or
+connection string, so the Function App needed no redeploy.
+
+Kept rather than deleted, despite being optional, because it pays for itself:
+measured ingestion is ~1.5 MB per two hours (~550 MB/month) against a **5 GB
+free tier**, and it is the only thing that can answer "is the site healthy right
+now" without manually curling it. It also produced the independent confirmation
+of the `perInstanceConcurrency` fix — 84 of 86 requests succeeded in the window
+before the change, then 13/13 and 24/24 after, with server-side p50 falling to
+11–16 ms. The five logged exceptions all fall in that same pre-fix window, bar
+one `code 143` (SIGTERM) from a worker recycling during a redeploy.
+
+Note that server-side p50 (11–16 ms) and the ~60–130 ms measured with `curl`
+from the collector host differ by the network round-trip, not by app time.
+
+The Smart Detection action group and the Failure Anomalies alert rule are also
+kept: both are free, and they mail on a failure spike rather than waiting for
+someone to notice.
