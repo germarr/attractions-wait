@@ -184,13 +184,18 @@ preference here, it is the only option that does not involve a tier upgrade.
   server carries an `AllowAll` firewall rule spanning `0.0.0.0`–`255.255.255.255`
   from 2023, alongside the `AllowAllAzureServicesAndResources` rule the Function
   App actually needs. Not introduced by this work and not removed by it — the
-  personal site and `football_prod` may depend on it — but it compounds the
-  credential decision below and is worth closing separately.
-- **A broad database credential is reused, knowingly.** The Function App runs as
-  `gerardoma` rather than a SELECT-only role, on a server shared with unrelated
-  databases, with a public repo. Accepted for speed on a single-operator
-  project. The upgrade is four lines of SQL plus swapping two app settings, and
-  the `pub` schema is in place specifically so those grants stay one-liners.
+  personal site and `football_prod` may depend on it — and still worth closing
+  separately.
+- **The Function App holds a SELECT-only credential.** It authenticates as
+  `pub_reader` (see [../../sql/pub_reader_role.sql](../../sql/pub_reader_role.sql)),
+  which can read the `pub` schema and nothing else: writes, DDL, and `pg_authid`
+  are all denied, and `CREATE` on `public` was revoked from `PUBLIC` in this
+  database. This matters more than usual here because the app is internet-facing
+  and the server is shared with unrelated databases. The publisher on the
+  collector host keeps a separate writing credential — a private box, not an
+  exposed one. Residual: PostgreSQL grants `CONNECT` to `PUBLIC` on every
+  database, so `pub_reader` can occupy a connection slot on `football_prod`
+  while reading nothing from it; revoking that would risk the other tenants.
 - **Two sources of truth to keep in step, again.** ADR-0004 raised this for
   rollup-vs-query; the same discipline now extends to publish-vs-serve, guarded
   the same way — by golden tests before cutover.
