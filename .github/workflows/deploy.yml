@@ -1,0 +1,86 @@
+# Deploy the FastAPI app to the Azure Function App (ADR-0007).
+#
+# Ships the CLOUD package only: app/serve.py reads finished payloads from the
+# Serving Store and computes nothing, so pandas/numpy/sqlmodel/sqlalchemy stay
+# on the collector host. Including them would add ~109 MB and ~0.4 s to every
+# cold start for code the cloud never runs — the build asserts they are absent.
+#
+# Dependencies are installed by Azure's remote build from requirements.txt
+# (Flex Consumption), matching how the app was first deployed by hand.
+#
+# Auth is OIDC federated credentials — no publish profile secret is stored.
+# Required repo secrets:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+# Target (already provisioned): attractions-dashboard / miscellaneous_projects / eastus
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  APP_NAME: attractions-dashboard
+  RESOURCE_GROUP: miscellaneous_projects
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage the cloud package
+        run: |
+          set -euo pipefail
+          mkdir -p stage/app
+          cp function_app.py host.json stage/
+          cp requirements-cloud.txt stage/requirements.txt
+          cp app/__init__.py app/main.py app/serve.py app/pgstore.py stage/app/
+          cp -r app/templates app/static stage/app/
+          find stage -name __pycache__ -type d -exec rm -rf {} + || true
+          echo "staged files:"; find stage -type f | sort
+
+      - name: Assert the compute half stayed home
+        run: |
+          set -euo pipefail
+          for f in stats.py db.py models.py collector.py rollup.py retention.py publish.py; do
+            if [ -f "stage/app/$f" ]; then
+              echo "::error::app/$f must not ship to the Function App (ADR-0007)"; exit 1
+            fi
+          done
+          for m in pandas numpy sqlmodel sqlalchemy; do
+            if grep -qE "^(import|from) +$m" stage/app/*.py stage/*.py; then
+              echo "::error::$m imported in the cloud package (ADR-0007)"; exit 1
+            fi
+          done
+          echo "clean: no compute modules, no heavy imports"
+
+      - name: Zip
+        run: cd stage && zip -qr ../deploy.zip . && cd .. && ls -l deploy.zip
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy (remote build)
+        run: |
+          az functionapp deployment source config-zip \
+            -n "$APP_NAME" -g "$RESOURCE_GROUP" \
+            --src deploy.zip --build-remote true
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          BASE="https://${APP_NAME}.azurewebsites.net"
+          for p in / /day /parks /api/watermark /api/destinations; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 180 "$BASE$p")
+            echo "  $code  $p"
+            [ "$code" = "200" ] || { echo "::error::$p returned $code"; exit 1; }
+          done
+          curl -s --max-time 60 "$BASE/api/watermark" | tee /dev/stderr | grep -q observed_at

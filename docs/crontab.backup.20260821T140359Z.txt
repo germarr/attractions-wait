@@ -1,0 +1,174 @@
+# YouTube V2 Cron Configuration — VM
+# ============================================
+#
+# Install path on the VM: /home/azureuser/youtube_homelab
+#
+# ############################################################################
+# DO NOT RUN `crontab deploy/crontab.txt`.
+#
+# This host's crontab is SHARED with other projects (live_events/attractions
+# and alt_data). Installing this file wholesale replaces the whole crontab and
+# would silently delete their 8 scheduled jobs.
+#
+# Install with the merge script instead — it preserves foreign jobs:
+#   ./deploy/install-crontab.sh          # shows a diff, asks to confirm
+#   crontab -l                           # verify afterwards
+# ############################################################################
+#
+# Jobs run as modules (python -m backend.ops.x) from the repo root, so the
+# package layout is the source of truth for these paths — see README.md.
+#
+# WHERE OUTPUT GOES
+#   backend.collect.* configure their own rotating file handler and own their
+#   log (precision_tracker.log, category_trending.log, track_videos.log,
+#   subscribers.log). Their shell output goes to logs/cron.log instead, which
+#   catches only what logging cannot: import errors and uncaught tracebacks.
+#   Pointing the redirect at the same file the handler writes duplicated every
+#   line and broke rotation, because the shell's file descriptor kept appending
+#   to the renamed inode after the handler rotated.
+#
+#   backend.ops.* log to stderr, so their redirect IS the log. Leave those.
+#
+# No PYTHONPATH is set here on purpose. `python -m` puts the working directory
+# on sys.path, and every line below cds into the repo first, so it is not
+# needed — and a global PYTHONPATH in a shared crontab leaks into other
+# projects' jobs.
+#
+# IMPORTANT: only one machine may run these jobs at a time. Running two
+# copies means double API spend and possible SQLite WAL corruption. The
+# homelab PC runs only the audio worker (see worker/), never this crontab.
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# ============================================
+# DAILY BACKUP - 3 AM
+# ============================================
+# Compressed backup with integrity verification, removes backups older than
+# BACKUP_RETENTION_DAYS in backend/config/settings.py (currently 7 days).
+#
+# Note this backs up the DATABASE only. By the time it runs on a Monday the
+# weekly archive has already pruned last week's trending rows, so they are not
+# in here — backend.ops.blob_archive is what protects those.
+0 3 * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.ops.backup --compress >> logs/backup.log 2>&1
+
+# ============================================
+# DAILY HEALTH CHECK - 6 AM
+# ============================================
+# Verifies database integrity and data freshness
+# Exit code: 0=healthy, 1=warning, 2=critical
+0 6 * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.ops.health_check >> logs/health.log 2>&1
+
+# ============================================
+# WEEKLY MAINTENANCE - Sunday 4 AM
+# ============================================
+# VACUUM, ANALYZE, cleanup
+0 4 * * 0 cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.ops.maintenance --all >> logs/maintenance.log 2>&1
+
+# ============================================
+# DAILY SUBSCRIBER TRACKING - 5 AM
+# ============================================
+0 5 * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.collect.subscribers >> logs/cron.log 2>&1
+
+# ============================================
+# WEEKLY METRICS REFRESH - Sunday 6 AM
+# ============================================
+# Refreshes view/like/comment counts for 50 most recent videos per channel
+0 6 * * 0 cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.collect.recent_videos --refresh >> logs/cron.log 2>&1
+
+# ============================================
+# WEEKLY ARCHIVE - Monday 1 AM
+# ============================================
+# Archives last week's data to Parquet, copies it to Azure Blob Storage, then
+# removes the archived data from the DB. Run before maintenance for optimal
+# cleanup.
+#
+# The upload sits between the export's verification and the DELETE, and is
+# best-effort: a storage outage logs an ERROR and the prune runs anyway, so a
+# blob problem can never wedge the job and fill the disk. The 2 AM catch-up
+# below is what makes that safe.
+0 1 * * 1 cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.ops.weekly_archive >> logs/archive.log 2>&1
+
+# ============================================
+# OFFSITE ARCHIVE CATCH-UP - Monday 2 AM
+# ============================================
+# Uploads any Parquet archive that has no matching blob. Nothing to do in the
+# normal case. Exits non-zero (with an ERROR line) if it still cannot upload —
+# that is the signal that the storage key rotated or the firewall changed.
+# Same log as the 1 AM job so one file tells the whole story of a week.
+0 2 * * 1 cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.ops.blob_archive --missing >> logs/archive.log 2>&1
+
+# ============================================
+# VIDEO DETECTION - 8 AM & 7 PM
+# ============================================
+# Detects new videos from analyzed channels
+0 8  * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.collect.recent_videos --detect >> logs/cron.log 2>&1
+0 19 * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.collect.recent_videos --detect >> logs/cron.log 2>&1
+
+# ============================================
+# DAILY SNAPSHOT COLLECTION - 9 PM
+# ============================================
+# Performance metrics for videos in their first 7 days
+0 21 * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.collect.recent_videos --snapshot >> logs/cron.log 2>&1
+
+# ============================================
+# DAILY TRENDING SNAPSHOT - 9:30 PM
+# ============================================
+# Performance snapshots for trending tracked videos (7-day tracking)
+30 21 * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.collect.recent_videos --trending-snapshot >> logs/cron.log 2>&1
+
+# ============================================
+# CATEGORY TRENDING - 10:05 AM & 10:05 PM
+# ============================================
+# Collects category-based trending videos into main tables with fetch_category_id
+5 10,22 * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.collect.category_trending >> logs/cron.log 2>&1
+
+# ============================================
+# LANDING-PAGE SNAPSHOT CACHE - 10:30 AM
+# ============================================
+# Rebuilds data/landing_cache.db with the no-filter payloads for the home page.
+# Runs ~25 min after the morning category-trending ingest.
+30 10 * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.ops.build_landing_snapshot >> logs/landing_snapshot.log 2>&1
+
+# ============================================
+# DAILY PG SYNC - 3:30 AM
+# ============================================
+# Mirrors SQLite database to PostgreSQL (uses PGHOST/PGUSER/... from .env)
+30 3 * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.ops.sync_to_postgres >> logs/pg_sync.log 2>&1
+
+# ============================================
+# HOURLY PRECISION TRACKING
+# ============================================
+# Check active channels for new video/short publications
+0 * * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.collect.precision_tracker --check-channels >> logs/cron.log 2>&1
+# Hourly performance snapshots for tracked videos
+5 * * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.collect.precision_tracker --collect-snapshots >> logs/cron.log 2>&1
+
+# ============================================
+# AUTO-TRANSCRIBE - 8:30 AM & 7:30 PM
+# ============================================
+# Transcribes + summarizes new videos from auto-transcribe-enabled channels.
+# Runs 30 min after detection. Requires Azure Whisper credentials in .env
+# (or local GPU + openai-whisper if you kept that path).
+30 8  * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.ops.auto_transcribe >> logs/auto_transcribe.log 2>&1
+30 19 * * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.ops.auto_transcribe >> logs/auto_transcribe.log 2>&1
+
+# ============================================
+# OPTIONAL: Monthly index rebuild - 1st of month at 5 AM
+# ============================================
+# Uncomment if you notice query performance degradation
+# 0 5 1 * * cd /home/azureuser/youtube_homelab && .venv/bin/python3 -m backend.ops.create_indexes --rebuild >> logs/maintenance.log 2>&1
+
+# ============================================
+# Jobs owned by other projects on this host.
+# Preserved verbatim by deploy/install-crontab.sh — do not edit here,
+# edit them in their own repo and re-run that project's installer.
+# ============================================
+*/5 * * * * cd /home/azureuser/live_events/attractions && flock -n /tmp/attractions-poll.lock .venv/bin/python -m app.collector >> /tmp/attractions-poll.log 2>&1
+15 6 * * * cd /home/azureuser/live_events/attractions && flock -n /tmp/attractions-rollup.lock .venv/bin/python -m app.rollup >> /tmp/attractions-rollup.log 2>&1
+45 6 * * * cd /home/azureuser/live_events/attractions && flock -n /tmp/attractions-prune.lock .venv/bin/python -m app.retention >> /tmp/attractions-prune.log 2>&1
+0 4 * * * cd /home/azureuser/alt_data && flock -n /tmp/football-refresh.lock ./scripts/nightly.sh
+15 * * * * cd /home/azureuser/alt_data && flock -n /tmp/football-preview-quotes.lock .venv/bin/python -m football_blog.preview --quotes >> refresh/logs/preview-quotes.out 2>&1
+*/15 * * * * cd /home/azureuser/alt_data && flock -n /tmp/football-fixture-rows.lock .venv/bin/python -m football_blog.bundle --rows >> refresh/logs/fixture-rows.out 2>&1
+20 * * * * cd /home/azureuser/alt_data && flock -n /tmp/market-watch.lock .venv/bin/python -m markets.watch >> refresh/logs/market-watch.out 2>&1
+* * * * * cd /home/azureuser/alt_data && flock -n /tmp/market-poll.lock .venv/bin/python -m markets.poll >> refresh/logs/market-poll.out 2>&1

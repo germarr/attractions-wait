@@ -1,0 +1,10 @@
+# Cloud package for the Azure Function App (ADR-0007).
+#
+# Deliberately NOT the project's full dependency set: app/serve.py reads
+# finished payloads and computes nothing, so pandas/numpy/sqlmodel stay on the
+# collector host. Including them would add ~109 MB and 0.6 s to every cold start
+# for code the cloud never executes.
+azure-functions
+fastapi>=0.138.0
+jinja2>=3.1.6
+psycopg[binary,pool]>=3.2
