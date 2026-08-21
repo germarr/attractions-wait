@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Daily Performance · QUEUESCOPE</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="/static/app.css?v={{ asset_v }}" rel="stylesheet" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="deck">
+      <div class="brand">
+        <div class="mark"><span class="glyph">◢</span><span>QUEUE</span><span class="queue">SCOPE</span></div>
+        <nav class="nav">
+          <a href="/">Overview</a>
+          <a href="/day" class="active">Daily Performance</a>
+          <a href="/parks">Parks</a>
+        </nav>
+      </div>
+      <div class="ctrl">
+        <div class="status" id="status"><span class="dot"></span><span id="status-text">connecting</span><b id="updated">—</b></div>
+        <div class="selector"><select id="target" aria-label="Select attraction"></select></div>
+      </div>
+    </header>
+
+    <section class="cards">
+      <div class="card live">
+        <div class="klabel">Current wait <span class="live-tag">LIVE</span></div>
+        <div class="value"><span id="d-current">—</span><span class="unit">min</span></div>
+        <div class="pills">
+          <span class="pill" id="pill-wow">WoW <b>—</b></span>
+          <span class="pill" id="pill-mom">MoM <b>—</b></span>
+          <span class="pill" id="pill-yoy">YoY <b>—</b></span>
+        </div>
+      </div>
+      <div class="card flat" id="card-mean"><div class="klabel">vs mean · today</div><div class="value" id="d-mean">—</div><div class="foot" id="foot-mean">today's average</div></div>
+      <div class="card flat" id="card-median"><div class="klabel">vs median · today</div><div class="value" id="d-median">—</div><div class="foot" id="foot-median">today's typical</div></div>
+      <div class="card flat" id="card-week"><div class="klabel">vs week</div><div class="value" id="d-week">—</div><div class="foot" id="foot-week">7-day mean</div></div>
+      <div class="card flat" id="card-month"><div class="klabel">vs month</div><div class="value" id="d-month">—</div><div class="foot" id="foot-month">30-day mean</div></div>
+      <div class="card flat" id="card-historic"><div class="klabel">vs historic</div><div class="value" id="d-historic">—</div><div class="foot" id="foot-historic">all-time mean</div></div>
+      <div class="card" id="card-downtime">
+        <div class="klabel">Downtime · today <span class="down-tag" id="d-downtag" hidden>● DOWN</span></div>
+        <div class="value"><span id="d-downtime">—</span><span class="unit">%</span></div>
+        <div class="foot" id="foot-downtime">vs historic</div>
+      </div>
+    </section>
+
+    <section class="panels">
+      <div class="panel" id="panel-day">
+        <div class="phead">
+          <div class="ptitle"><h2>Today · minute by minute</h2><span class="pmeta">wait · mean · median · temp</span></div>
+          <div class="legend">
+            <span style="color:#ffb454"><span class="sw"></span>Wait</span>
+            <span style="color:#9b8cff"><span class="sw" style="border-top-style:dashed"></span>Mean</span>
+            <span style="color:#56d4c4"><span class="sw" style="border-top-style:dashed"></span>Median</span>
+            <span style="color:#d98f63"><span class="sw" style="border-top-style:dotted"></span>°C</span>
+          </div>
+        </div>
+        <div class="canvas-wrap tall"><canvas id="chart-day"></canvas><div class="empty">Park not open yet</div></div>
+      </div>
+
+      <div class="panel" id="panel-compare">
+        <div class="phead">
+          <div class="ptitle"><h2>Today vs prior periods</h2><span class="pmeta">by time of day</span></div>
+          <div class="legend">
+            <span style="color:#ffb454"><span class="sw"></span>Today</span>
+            <span style="color:#fb6f6f"><span class="sw"></span>Yesterday</span>
+            <span style="color:#56d4c4"><span class="sw"></span>WoW</span>
+            <span style="color:#9b8cff"><span class="sw"></span>MoM</span>
+          </div>
+        </div>
+        <div class="canvas-wrap med"><canvas id="chart-compare"></canvas><div class="empty">No data in window</div></div>
+        <div class="corr-note" id="compare-note"></div>
+      </div>
+
+      <div class="panel" id="panel-weekday">
+        <div class="phead">
+          <div class="ptitle"><h2>By day of week</h2><span class="pmeta">mean wait · today's weekday highlighted</span></div>
+          <div class="legend"><span style="color:#56d4c4"><span class="sw" style="border-top-style:dashed"></span>Today's mean</span></div>
+        </div>
+        <div class="canvas-wrap med"><canvas id="chart-weekday"></canvas><div class="empty">No data yet</div></div>
+      </div>
+
+      <div class="panel">
+        <div class="rel-corr-head"><h2>Wait × Weather correlation</h2><span class="rel-n" id="corr-n"></span></div>
+        <div class="corr-grid" id="corr-grid"></div>
+        <div class="corr-note" id="corr-note"></div>
+      </div>
+    </section>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="/static/day.js?v={{ asset_v }}"></script>
+</body>
+</html>

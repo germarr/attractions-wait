@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QUEUESCOPE · Universal Orlando queue telemetry</title>
+  <link href="/static/output.css?v={{ asset_v }}" rel="stylesheet" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root{
+      --bg:#080a0e;
+      --bg-2:#0b0e14;
+      --panel:#11151d;
+      --panel-2:#0d111a;
+      --line:rgba(255,255,255,.07);
+      --line-2:rgba(255,255,255,.12);
+      --text:#e9ecf2;
+      --muted:#8a93a6;
+      --faint:#5b6376;
+      --accent:#ffb454;        /* mean / primary signal */
+      --accent-2:#56d4c4;      /* median / secondary */
+      --good:#46d68a;          /* below typical = good */
+      --bad:#fb6f6f;           /* busier = bad */
+      --band:rgba(255,180,84,.12);
+      --glow:rgba(255,180,84,.10);
+      --radius:12px;
+      --mono:"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      --display:"Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+    }
+
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0}
+    body{
+      background:var(--bg);
+      color:var(--text);
+      font-family:var(--display);
+      -webkit-font-smoothing:antialiased;
+      min-height:100vh;
+      position:relative;
+      overflow-x:hidden;
+    }
+    /* atmosphere: top signal glow + faint instrument grid */
+    body::before{
+      content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+      background:
+        radial-gradient(1100px 520px at 78% -8%, var(--glow), transparent 60%),
+        radial-gradient(900px 600px at 0% 0%, rgba(86,212,196,.06), transparent 55%),
+        linear-gradient(180deg, var(--bg-2), var(--bg) 60%);
+    }
+    /* grain overlay */
+    body::after{
+      content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.04;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+    .wrap{position:relative;z-index:1;max-width:1320px;margin:0 auto;padding:28px clamp(16px,3vw,40px) 64px}
+
+    /* ── header ─────────────────────────────────────────── */
+    header.deck{
+      display:flex;align-items:flex-end;justify-content:space-between;
+      gap:24px;flex-wrap:wrap;
+      padding-bottom:20px;margin-bottom:26px;
+      border-bottom:1px solid var(--line);
+    }
+    .brand{display:flex;flex-direction:column;gap:6px;min-width:0}
+    .brand .mark{
+      display:flex;align-items:center;gap:11px;
+      font-weight:800;letter-spacing:-.02em;
+      font-size:clamp(22px,2.4vw,30px);line-height:1;
+    }
+    .brand .mark .glyph{
+      color:var(--accent);font-size:.9em;transform:translateY(1px);
+      filter:drop-shadow(0 0 10px var(--glow));
+    }
+    .brand .mark .scope{color:var(--text)}
+    .brand .mark .queue{color:var(--muted)}
+    .brand .sub{
+      font-family:var(--mono);font-size:11px;letter-spacing:.16em;
+      text-transform:uppercase;color:var(--faint);
+    }
+    .topnav{display:flex;gap:6px;margin-top:4px;font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+    .topnav a{color:var(--muted);text-decoration:none;padding:5px 11px;border:1px solid var(--line);border-radius:999px}
+    .topnav a:hover{color:var(--text);border-color:var(--line-2)}
+    .topnav a.active{color:var(--accent);border-color:rgba(255,180,84,.4);background:rgba(255,180,84,.06)}
+
+    .ctrl{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+    .status{
+      display:flex;align-items:center;gap:9px;
+      font-family:var(--mono);font-size:11px;letter-spacing:.12em;
+      text-transform:uppercase;color:var(--muted);
+      padding:7px 12px;border:1px solid var(--line);border-radius:999px;
+      background:rgba(255,255,255,.015);white-space:nowrap;
+    }
+    .status .dot{
+      width:7px;height:7px;border-radius:50%;background:var(--good);
+      box-shadow:0 0 0 0 rgba(70,214,138,.6);animation:pulse 2.4s infinite;
+    }
+    .status.is-stale .dot{background:var(--bad);animation:none}
+    .status.is-stale{color:var(--bad)}
+    .status b{color:var(--text);font-weight:600}
+
+    /* weather chip */
+    .wx{
+      display:flex;align-items:center;gap:9px;white-space:nowrap;
+      font-family:var(--mono);font-size:12.5px;letter-spacing:.04em;color:var(--text);
+      padding:7px 13px;border:1px solid var(--line);border-radius:999px;
+      background:rgba(255,255,255,.015);
+    }
+    .wx[hidden]{display:none}
+    .wx .wx-icon{font-size:15px;line-height:1}
+    .wx .wx-label{color:var(--muted);text-transform:uppercase;font-size:10px;letter-spacing:.13em}
+    .wx.raining{border-color:rgba(111,159,216,.42);background:rgba(111,159,216,.06)}
+    .wx.raining .wx-icon{filter:drop-shadow(0 0 7px rgba(111,159,216,.5))}
+
+    /* park hours chip */
+    .hours{
+      display:flex;align-items:center;gap:8px;white-space:nowrap;
+      font-family:var(--mono);font-size:12px;letter-spacing:.04em;color:var(--muted);
+      padding:7px 13px;border:1px solid var(--line);border-radius:999px;
+      background:rgba(255,255,255,.015);
+    }
+    .hours[hidden]{display:none}
+    .hours .h-state{font-size:10px;letter-spacing:.14em;text-transform:uppercase}
+    .hours.open{border-color:rgba(70,214,138,.32)}
+    .hours.open .h-state{color:var(--good)}
+    .hours.closed .h-state{color:var(--faint)}
+    .hours .h-range{color:var(--text)}
+    @keyframes pulse{
+      0%{box-shadow:0 0 0 0 rgba(70,214,138,.5)}
+      70%{box-shadow:0 0 0 7px rgba(70,214,138,0)}
+      100%{box-shadow:0 0 0 0 rgba(70,214,138,0)}
+    }
+
+    .selector{position:relative;display:inline-flex;align-items:center}
+    .selector::after{
+      content:"▾";position:absolute;right:14px;color:var(--accent);
+      font-size:12px;pointer-events:none;
+    }
+    .selector select{
+      appearance:none;-webkit-appearance:none;
+      font-family:var(--mono);font-size:13px;font-weight:500;letter-spacing:.02em;
+      color:var(--text);background:var(--panel);
+      border:1px solid var(--line-2);border-radius:10px;
+      padding:11px 38px 11px 14px;min-width:268px;max-width:340px;cursor:pointer;
+      transition:border-color .15s ease, box-shadow .15s ease;
+    }
+    .selector select:hover{border-color:var(--accent)}
+    .selector select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--glow)}
+    .selector select optgroup{background:#0c0f16;color:var(--muted);font-style:normal}
+    .selector select option{background:#0c0f16;color:var(--text)}
+
+    /* ── stat cards ─────────────────────────────────────── */
+    .cards{
+      display:grid;grid-template-columns:1.4fr repeat(5,1fr);gap:14px;margin-bottom:30px;
+    }
+    @media(max-width:1200px){.cards{grid-template-columns:repeat(3,1fr)}}
+    @media(max-width:680px){.cards{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:560px){.cards{grid-template-columns:1fr}}
+    .card{
+      position:relative;overflow:hidden;
+      background:linear-gradient(180deg,var(--panel),var(--panel-2));
+      border:1px solid var(--line);border-radius:var(--radius);
+      padding:18px 18px 16px;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.03);
+      opacity:0;transform:translateY(10px);
+      animation:rise .5s cubic-bezier(.2,.7,.2,1) forwards;
+    }
+    .card:nth-child(1){animation-delay:.04s}
+    .card:nth-child(2){animation-delay:.10s}
+    .card:nth-child(3){animation-delay:.16s}
+    .card:nth-child(4){animation-delay:.22s}
+    .card:nth-child(5){animation-delay:.28s}
+    .card:nth-child(6){animation-delay:.34s}
+    @keyframes rise{to{opacity:1;transform:none}}
+    /* downtime card: highlight when the ride is down right now */
+    .card.is-down{border-color:rgba(251,111,111,.34)}
+    .card.is-down .value{color:var(--bad)}
+    .card .down-tag{
+      color:var(--bad);font-size:9px;border:1px solid rgba(251,111,111,.45);
+      border-radius:4px;padding:1px 5px;letter-spacing:.14em;
+    }
+    .card .down-tag[hidden]{display:none}
+    .card.live{border-color:rgba(255,180,84,.32)}
+    .card.live::before{
+      content:"";position:absolute;left:0;top:0;bottom:0;width:2px;
+      background:linear-gradient(180deg,var(--accent),transparent);
+      box-shadow:0 0 16px var(--glow);
+    }
+    /* corner brackets */
+    .card .tick{position:absolute;width:9px;height:9px;border:1px solid var(--line-2);opacity:.6}
+    .card .tick.tr{top:9px;right:9px;border-left:0;border-bottom:0}
+    .card .tick.bl{bottom:9px;left:9px;border-right:0;border-top:0}
+
+    .card .klabel{
+      font-family:var(--mono);font-size:10px;letter-spacing:.16em;
+      text-transform:uppercase;color:var(--muted);margin-bottom:14px;
+      display:flex;align-items:center;gap:7px;
+    }
+    .card.live .klabel .live-tag{
+      color:var(--accent);font-size:9px;border:1px solid rgba(255,180,84,.4);
+      border-radius:4px;padding:1px 5px;letter-spacing:.14em;
+    }
+    .card .value{
+      font-family:var(--mono);font-weight:600;line-height:1;letter-spacing:-.01em;
+      font-size:clamp(30px,3.4vw,44px);color:var(--text);
+      display:flex;align-items:baseline;gap:7px;
+    }
+    .card.live .value{color:var(--accent)}
+    .card .value .unit{font-size:14px;font-weight:500;color:var(--faint);letter-spacing:0}
+    .card .value.muted{color:var(--faint)}
+    .card .foot{
+      font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:11px;
+      letter-spacing:.02em;min-height:14px;
+    }
+    /* delta cards */
+    .delta .value{font-size:clamp(26px,2.8vw,38px)}
+    .delta .value .arrow{font-size:.62em;transform:translateY(-2px)}
+    .delta.good .value{color:var(--good)}
+    .delta.bad .value{color:var(--bad)}
+    .delta.flat .value{color:var(--muted)}
+
+    /* ── chart panels ───────────────────────────────────── */
+    .panels{display:flex;flex-direction:column;gap:18px}
+    .panel{
+      position:relative;
+      background:linear-gradient(180deg,var(--panel),var(--panel-2));
+      border:1px solid var(--line);border-radius:var(--radius);
+      padding:18px 20px 16px;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.03);
+      opacity:0;transform:translateY(12px);
+      animation:rise .6s cubic-bezier(.2,.7,.2,1) forwards;
+    }
+    .panel:nth-of-type(1){animation-delay:.30s}
+    .panel:nth-of-type(2){animation-delay:.38s}
+    .panel:nth-of-type(3){animation-delay:.46s}
+    .panel:nth-of-type(4){animation-delay:.54s}
+    .panel-live{border-color:rgba(255,180,84,.22)}
+    .ptitle h2 .live-dot{
+      display:inline-block;width:8px;height:8px;border-radius:50%;
+      background:var(--good);margin-right:9px;vertical-align:middle;
+      box-shadow:0 0 0 0 rgba(70,214,138,.6);animation:pulse 2.4s infinite;
+    }
+    .panel .phead{
+      display:flex;align-items:center;justify-content:space-between;
+      gap:16px;flex-wrap:wrap;margin-bottom:14px;
+    }
+    .phead .ptitle{display:flex;align-items:baseline;gap:12px}
+    .phead .ptitle h2{
+      margin:0;font-size:15px;font-weight:700;letter-spacing:.02em;color:var(--text);
+    }
+    .phead .ptitle .pmeta{
+      font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+      text-transform:uppercase;color:var(--faint);
+    }
+    .legend{display:flex;align-items:center;gap:16px;font-family:var(--mono);font-size:10.5px;
+      letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+    .legend span{display:inline-flex;align-items:center;gap:7px}
+    .legend .sw{width:16px;height:0;border-top:2px solid currentColor}
+    .legend .mean{color:var(--accent)}
+    .legend .median{color:var(--accent-2)}
+    .legend .median .sw{border-top-style:dashed}
+    .legend .band{color:var(--muted)}
+    .legend .band .sw{height:9px;border:0;background:var(--band);border-radius:2px;width:16px}
+    .legend .temp{color:#d98f63}
+    .legend .temp .sw{border-top-style:dotted}
+    .legend .rain{color:#6f9fd8}
+    .legend .rain .sw{height:9px;border:0;background:rgba(111,159,216,.22);border-radius:2px;width:16px}
+
+    .canvas-wrap{position:relative;width:100%}
+    .canvas-wrap.recent{height:252px}
+    .canvas-wrap.today{height:268px}
+    .canvas-wrap.week,.canvas-wrap.month{height:222px}
+    .empty{
+      position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+      font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;
+      color:var(--faint);
+    }
+    .panel.is-empty .empty{display:flex}
+    .panel.is-empty canvas{visibility:hidden}
+
+    /* ── reliability section ────────────────────────────── */
+    .reliability{margin-top:30px;display:flex;flex-direction:column;gap:18px}
+    .rel-head h2{margin:0;font-size:15px;font-weight:700;letter-spacing:.02em;color:var(--text)}
+    .rel-head .rel-sub{color:var(--muted);font-weight:500;font-size:13px;font-family:var(--mono)}
+    .rel-table-wrap{
+      overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);
+      background:linear-gradient(180deg,var(--panel),var(--panel-2));
+    }
+    .rel-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+    .rel-table th,.rel-table td{padding:9px 13px;text-align:right;white-space:nowrap}
+    .rel-table th{
+      color:var(--faint);font-weight:500;font-size:10px;letter-spacing:.12em;
+      text-transform:uppercase;border-bottom:1px solid var(--line);position:sticky;top:0;
+    }
+    .rel-table th.a,.rel-table td.a{text-align:left;color:var(--text)}
+    .rel-table tbody tr{border-bottom:1px solid rgba(255,255,255,.04)}
+    .rel-table tbody tr:hover{background:rgba(255,255,255,.02)}
+    .rel-table td{color:var(--muted)}
+    .rel-table tr.total{background:rgba(255,180,84,.06);border-bottom:1px solid var(--line-2)}
+    .rel-table tr.total td{color:var(--text);font-weight:600}
+    .rel-table td.z{font-weight:600;color:var(--muted)}
+    .rel-empty{padding:18px;font-family:var(--mono);font-size:11px;color:var(--faint);text-align:center}
+
+    .rel-corr{
+      border:1px solid var(--line);border-radius:var(--radius);
+      background:linear-gradient(180deg,var(--panel),var(--panel-2));padding:16px 18px;
+    }
+    .rel-corr-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:14px}
+    .rel-corr-head h3{margin:0;font-size:13px;font-weight:700;letter-spacing:.02em;color:var(--text)}
+    .rel-n{font-family:var(--mono);font-size:11px;color:var(--faint)}
+    .corr-grid{display:grid;grid-template-columns:auto repeat(3,minmax(58px,86px));gap:4px;width:max-content}
+    .corr-grid .cell{
+      font-family:var(--mono);font-size:11px;display:flex;align-items:center;justify-content:center;
+      padding:9px;border-radius:6px;min-height:36px;
+    }
+    .corr-grid .chead,.corr-grid .rhead{color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+    .corr-grid .rhead{justify-content:flex-end;padding-right:11px}
+    .corr-grid .rcell{
+      color:#f4f6fb;font-weight:600;
+      background:rgba(255,255,255,.05);
+      border:1px solid rgba(255,255,255,.14);
+      text-shadow:0 1px 2px rgba(0,0,0,.45);
+    }
+    .corr-grid .rcell.diag{color:var(--muted);font-weight:500;background:rgba(255,255,255,.03)}
+    .corr-grid.insufficient .rcell{opacity:.78}
+    .corr-note{margin-top:12px;font-family:var(--mono);font-size:10.5px;color:var(--faint);letter-spacing:.03em}
+
+    .colophon{
+      margin-top:34px;padding-top:18px;border-top:1px solid var(--line);
+      display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+      font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+      text-transform:uppercase;color:var(--faint);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="deck">
+      <div class="brand">
+        <div class="mark">
+          <span class="glyph">◢</span><span class="scope">QUEUE</span><span class="queue">SCOPE</span>
+        </div>
+        <div class="sub">Universal Orlando · live queue telemetry</div>
+        <nav class="topnav">
+          <a href="/" class="active">Overview</a>
+          <a href="/day">Daily Performance</a>
+          <a href="/parks">Parks</a>
+        </nav>
+      </div>
+      <div class="ctrl">
+        <div class="hours" id="hours" hidden>
+          <span class="h-state" id="h-state">—</span>
+          <span class="h-range" id="h-range"></span>
+        </div>
+        <div class="wx" id="wx" hidden>
+          <span class="wx-icon" id="wx-icon">○</span>
+          <span class="wx-temp" id="wx-temp">—</span>
+          <span class="wx-label" id="wx-label"></span>
+        </div>
+        <div class="status" id="status">
+          <span class="dot"></span><span id="status-text">connecting</span>
+          <b id="updated">—</b>
+        </div>
+        <div class="selector">
+          <select id="target" aria-label="Select attraction"></select>
+        </div>
+      </div>
+    </header>
+
+    <section class="cards" id="cards">
+      <div class="card live">
+        <span class="tick tr"></span><span class="tick bl"></span>
+        <div class="klabel">Current wait <span class="live-tag">LIVE</span></div>
+        <div class="value" id="c-current"><span id="c-current-num">—</span><span class="unit">min</span></div>
+        <div class="foot" id="c-current-foot">&nbsp;</div>
+      </div>
+      <div class="card">
+        <span class="tick tr"></span><span class="tick bl"></span>
+        <div class="klabel">Mean · today</div>
+        <div class="value"><span id="c-mean">—</span><span class="unit">min</span></div>
+        <div class="foot">average so far today</div>
+      </div>
+      <div class="card">
+        <span class="tick tr"></span><span class="tick bl"></span>
+        <div class="klabel">Median · today</div>
+        <div class="value"><span id="c-median">—</span><span class="unit">min</span></div>
+        <div class="foot">typical wait today</div>
+      </div>
+      <div class="card delta flat" id="card-dmean">
+        <span class="tick tr"></span><span class="tick bl"></span>
+        <div class="klabel">vs mean</div>
+        <div class="value" id="c-dmean">—</div>
+        <div class="foot" id="c-dmean-foot">vs today's average</div>
+      </div>
+      <div class="card delta flat" id="card-dmedian">
+        <span class="tick tr"></span><span class="tick bl"></span>
+        <div class="klabel">vs median</div>
+        <div class="value" id="c-dmedian">—</div>
+        <div class="foot" id="c-dmedian-foot">vs today's typical</div>
+      </div>
+      <div class="card" id="card-downtime">
+        <span class="tick tr"></span><span class="tick bl"></span>
+        <div class="klabel">Downtime · today <span class="down-tag" id="down-tag" hidden>● DOWN</span></div>
+        <div class="value"><span id="c-downtime">—</span><span class="unit">min</span></div>
+        <div class="foot" id="c-downtime-foot">unplanned outages</div>
+      </div>
+    </section>
+
+    <section class="panels">
+      <div class="panel panel-live" id="panel-recent">
+        <div class="phead">
+          <div class="ptitle"><h2><span class="live-dot"></span>Live</h2><span class="pmeta" id="meta-recent">last 90 min · minutes</span></div>
+          <div class="legend">
+            <span class="mean"><span class="sw"></span>Wait</span>
+          </div>
+        </div>
+        <div class="canvas-wrap recent"><canvas id="chart-recent"></canvas><div class="empty">No readings yet</div></div>
+      </div>
+
+      <div class="panel" id="panel-today">
+        <div class="phead">
+          <div class="ptitle"><h2>Today</h2><span class="pmeta" id="meta-today">hourly · minutes</span></div>
+          <div class="legend">
+            <span class="mean"><span class="sw"></span>Mean</span>
+            <span class="median"><span class="sw"></span>Median</span>
+            <span class="band"><span class="sw"></span>±1σ</span>
+            <span class="temp"><span class="sw"></span>°C</span>
+            <span class="rain"><span class="sw"></span>Rain</span>
+          </div>
+        </div>
+        <div class="canvas-wrap today"><canvas id="chart-today"></canvas><div class="empty">No readings in window</div></div>
+      </div>
+
+      <div class="panel" id="panel-week">
+        <div class="phead">
+          <div class="ptitle"><h2>This week</h2><span class="pmeta" id="meta-week">daily · minutes</span></div>
+          <div class="legend">
+            <span class="mean"><span class="sw"></span>Mean</span>
+            <span class="median"><span class="sw"></span>Median</span>
+            <span class="band"><span class="sw"></span>±1σ</span>
+            <span class="temp"><span class="sw"></span>°C</span>
+            <span class="rain"><span class="sw"></span>Rain</span>
+          </div>
+        </div>
+        <div class="canvas-wrap week"><canvas id="chart-week"></canvas><div class="empty">No readings in window</div></div>
+      </div>
+
+      <div class="panel" id="panel-month">
+        <div class="phead">
+          <div class="ptitle"><h2>This month</h2><span class="pmeta" id="meta-month">daily · minutes</span></div>
+          <div class="legend">
+            <span class="mean"><span class="sw"></span>Mean</span>
+            <span class="median"><span class="sw"></span>Median</span>
+            <span class="band"><span class="sw"></span>±1σ</span>
+            <span class="temp"><span class="sw"></span>°C</span>
+            <span class="rain"><span class="sw"></span>Rain</span>
+          </div>
+        </div>
+        <div class="canvas-wrap month"><canvas id="chart-month"></canvas><div class="empty">No readings in window</div></div>
+      </div>
+    </section>
+
+    <section class="reliability" id="reliability">
+      <div class="rel-head">
+        <h2>Reliability <span class="rel-sub" id="rel-park"></span></h2>
+      </div>
+      <div class="rel-table-wrap">
+        <table class="rel-table">
+          <thead>
+            <tr>
+              <th class="a">Attraction</th>
+              <th>Today</th><th>Yesterday</th><th>Week</th><th>Month</th><th>Historic</th>
+              <th>z</th>
+            </tr>
+          </thead>
+          <tbody id="rel-body"></tbody>
+        </table>
+      </div>
+      <div class="rel-corr">
+        <div class="rel-corr-head">
+          <h3>Wait &amp; Downtime × Weather correlation</h3>
+          <span class="rel-n" id="corr-n"></span>
+        </div>
+        <div class="corr-grid" id="corr-grid"></div>
+        <div class="corr-note" id="corr-note"></div>
+      </div>
+    </section>
+
+    <div class="colophon">
+      <span>Source · themeparks.wiki</span>
+      <span>Cards refresh 60s · charts 5m</span>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="/static/dashboard.js?v={{ asset_v }}"></script>
+</body>
+</html>
