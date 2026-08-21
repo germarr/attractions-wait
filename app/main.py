@@ -1,10 +1,19 @@
 """FastAPI web app: serves the dashboard shell and JSON for the charts.
 
-Read-only over the SQLite file; the cron collector is the sole writer.
+One route layer, two readers (ADR-0007), chosen by the READER env var:
+
+    READER=sqlite    (default) app.stats computes over the local SQLite file
+    READER=postgres            app.serve SELECTs finished payloads from the
+                               Serving Store — no pandas, no arithmetic
+
+Both expose the same nine functions and return byte-identical payloads, so this
+module, the Jinja templates, and the frontend JS are shared verbatim between the
+collector host and the Azure Function App.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, Query
@@ -12,8 +21,22 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
-from app import stats
-from app.db import init_db
+READER = os.environ.get("READER", "sqlite").strip().lower()
+
+if READER == "postgres":
+    from app import serve as reader
+else:
+    try:
+        from app import stats as reader
+    except ImportError as exc:  # pragma: no cover - deployment guard
+        # The cloud package deliberately ships without app/stats.py and its
+        # pandas dependency (ADR-0007). Reaching here means READER was lost or
+        # misspelt in the Function App settings; say so plainly rather than
+        # surfacing a bare ImportError on a dead site.
+        raise RuntimeError(
+            f"READER={READER!r} selects the SQLite reader, but app.stats is not "
+            "importable. In the Function App this must be READER=postgres."
+        ) from exc
 
 APP_DIR = Path(__file__).resolve().parent
 
@@ -27,8 +50,12 @@ COMPARE_WINDOWS = {"today", "week", "month"}
 
 @app.on_event("startup")
 def _startup() -> None:
-    # Ensure the schema exists even if the collector hasn't run yet.
-    init_db()
+    # Only the SQLite reader owns a schema; the Serving Store is created by the
+    # publisher (app/publish.py --schema) and is read-only from here.
+    if READER != "postgres":
+        from app.db import init_db
+
+        init_db()
 
 
 def _asset_version() -> str:
@@ -68,12 +95,12 @@ def parks(request: Request):
 
 @app.get("/api/attractions")
 def api_attractions():
-    return stats.get_attractions()
+    return reader.get_attractions()
 
 
 @app.get("/api/stats")
 def api_stats(attraction: str = Query(...)):
-    return stats.get_stats(attraction)
+    return reader.get_stats(attraction)
 
 
 @app.get("/api/series")
@@ -83,7 +110,7 @@ def api_series(
 ):
     if window not in WINDOWS:
         window = "today"
-    return stats.get_series(attraction, window)
+    return reader.get_series(attraction, window)
 
 
 @app.get("/api/recent")
@@ -91,27 +118,41 @@ def api_recent(
     attraction: str = Query(...),
     minutes: int = Query(90, ge=1, le=720),
 ):
-    return stats.get_recent(attraction, minutes)
+    return reader.get_recent(attraction, minutes)
 
 
 @app.get("/api/reliability")
 def api_reliability(attraction: str = Query(...)):
-    return stats.get_reliability(attraction)
+    return reader.get_reliability(attraction)
 
 
 @app.get("/api/day/live")
 def api_day_live(attraction: str = Query(...)):
-    return stats.get_day_live(attraction)
+    return reader.get_day_live(attraction)
 
 
 @app.get("/api/day/summary")
 def api_day_summary(attraction: str = Query(...)):
-    return stats.get_day_summary(attraction)
+    return reader.get_day_summary(attraction)
 
 
 @app.get("/api/destinations")
 def api_destinations():
-    return stats.get_destinations()
+    return reader.get_destinations()
+
+
+@app.get("/api/watermark")
+def api_watermark():
+    """How fresh the data actually is.
+
+    Under the Serving Store a 200 no longer implies fresh data — a dead publish
+    leaves the last good rows in place. This exposes the real observed-at so the
+    UI can degrade to "stale" instead of claiming "live" over old numbers.
+    """
+    if READER == "postgres":
+        return reader.get_watermark()
+    ts = reader._latest_observed_at()
+    return {"live": {"observed_at": ts, "built_at": ts}}
 
 
 @app.get("/api/parks/compare")
@@ -121,4 +162,4 @@ def api_parks_compare(
 ):
     if window not in COMPARE_WINDOWS:
         window = "today"
-    return stats.get_park_comparison(destination, window)
+    return reader.get_park_comparison(destination, window)

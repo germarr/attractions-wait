@@ -20,7 +20,24 @@
   const color = (i) => PALETTE[i % PALETTE.length];
 
   function setStatus(ok, label) { $("status").classList.toggle("is-stale", !ok); $("status-text").textContent = label; }
-  function stamp() { const t = new Date(); $("updated").textContent = [t.getHours(), t.getMinutes(), t.getSeconds()].map((x) => String(x).padStart(2, "0")).join(":"); }
+  // Freshness comes from the data, not the browser clock (ADR-0007). Behind the
+  // Serving Store a successful fetch no longer implies fresh data: if a Publish
+  // dies, the Function keeps returning 200 with the last good rows. So the badge
+  // reads the Watermark's observed-at and ages it, instead of stamping now().
+  const FRESH_MS = 12 * 60 * 1000, STALE_MS = 60 * 60 * 1000;
+  async function stampFreshness() {
+    try {
+      const w = await (await fetch("/api/watermark")).json();
+      const iso = w && w.live && w.live.observed_at;
+      if (!iso) { setStatus(false, "no data"); return; }
+      const t = new Date(iso), age = Date.now() - t.getTime();
+      $("updated").textContent = [t.getHours(), t.getMinutes(), t.getSeconds()]
+        .map((x) => String(x).padStart(2, "0")).join(":");
+      if (age < FRESH_MS) setStatus(true, "live");
+      else if (age < STALE_MS) setStatus(false, "stale");
+      else setStatus(false, "offline");
+    } catch (e) { setStatus(false, "offline"); }
+  }
 
   // ── radar axis definitions (raw → unit; cap = absolute rim value) ──────
   const busyAxes = (caps) => [
@@ -173,7 +190,7 @@
     try {
       const r = await fetch(`/api/parks/compare?destination=${encodeURIComponent(destId)}&window=${windowSel}`);
       if (!r.ok) throw 0;
-      render(await r.json()); stamp(); setStatus(true, "live");
+      render(await r.json()); stampFreshness();
     } catch (e) { setStatus(false, "offline"); }
   }
 

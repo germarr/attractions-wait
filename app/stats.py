@@ -1166,9 +1166,15 @@ def get_day_live(target: str) -> dict:
     }
 
 
-def get_day_summary(target: str) -> dict:
+def get_day_summary(target: str, include_slow: bool = True) -> dict:
     """Slow-refreshing bits: window means + deltas, downtime vs historic,
-    correlation, period-comparison traces, weekday means."""
+    correlation, period-comparison traces, weekday means.
+
+    `include_slow=False` returns only the intraday-moving half (current, means,
+    deltas, downtime), skipping correlation/compare/weekday. The Live Publish
+    (ADR-0007) uses it: those three are 97% of the payload and shift
+    imperceptibly in one partial day, so they ship in the Daily Publish instead.
+    """
     now_local = _now_local()
     today_start = _window_start_utc("today", now_local)
     today_series = _load_minute_series(target, today_start)
@@ -1210,7 +1216,7 @@ def get_day_summary(target: str) -> dict:
     dt_today = _downtime_rate(target, today_start)
     dt_hist = _dt_over(daily.keys())
     month_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=29)
-    return {
+    out = {
         "current": current,
         "means": means,
         "deltas": {k: _delta(v) for k, v in means.items()},
@@ -1219,10 +1225,12 @@ def get_day_summary(target: str) -> dict:
             "historic": dt_hist,
             "delta": round(dt_today - dt_hist, 1) if (dt_today is not None and dt_hist is not None) else None,
         },
-        "correlation": _wait_weather_corr(target, _park_id_for_target(target), month_start),
-        "compare": _compare_traces(target, now_local),
-        "weekday": _weekday_means(target, now_local),
     }
+    if include_slow:
+        out["correlation"] = _wait_weather_corr(target, _park_id_for_target(target), month_start)
+        out["compare"] = _compare_traces(target, now_local)
+        out["weekday"] = _weekday_means(target, now_local)
+    return out
 
 
 # ── Parks comparison page ─────────────────────────────────────────────────
