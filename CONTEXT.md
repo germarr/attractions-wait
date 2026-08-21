@@ -1,13 +1,14 @@
 # Attractions Wait-Time Dashboard
 
-A webapp that polls themeparks.wiki for live attraction wait times at the
-Universal Orlando Resort, stores each reading, and visualizes how waits move
-over the day, week, and month.
+A webapp that polls themeparks.wiki for live attraction wait times across the
+Destinations it tracks (currently Walt Disney World and Universal Orlando —
+seven Parks in total), stores each reading, and visualizes how waits move over
+the day, week, and month.
 
 ## Language
 
 **Destination**:
-A top-level resort the app polls each minute (e.g. Universal Orlando Resort,
+A top-level resort the app polls every five minutes (e.g. Universal Orlando,
 Walt Disney World Resort). Each Destination's feed yields its Parks and
 Attractions. The app tracks several — Parks belong to exactly one Destination.
 _Avoid_: Resort (in code/identifiers — use "Destination" to match the API)
@@ -71,8 +72,9 @@ _Avoid_: Closure, outage (outside-hours CLOSED ≠ Downtime)
 
 **Downtime Rate**:
 Downtime expressed as a percentage of a Park's Operating Hours over a window
-(Week / Month / Year / Historic) — downtime minutes ÷ operating minutes. The
-length-independent, comparable form of Downtime used in the reliability table.
+(Today / Yesterday / Week / Month / Historic) — downtime minutes ÷ operating
+minutes. The length-independent, comparable form of Downtime used in the
+reliability table.
 _Avoid_: Downtime total (raw minutes aren't comparable across windows)
 
 **Park Downtime Rate**:
@@ -142,3 +144,51 @@ _Avoid_: Condition, weather type
 A derived yes/no for a Park at a moment: true when its Weather Event is a
 rain/shower/thunderstorm condition or measured precipitation is above zero.
 Computed from a Weather Reading, never stored.
+
+**Rollup**:
+The precomputed per-day form of the dataset: one finalized park-local day per
+Attraction and per Park, holding the counts and sums that windows reconstruct by
+summation. Built nightly (ADR-0004) and never pruned, so it outlives the raw
+Readings it came from (ADR-0005).
+_Avoid_: Aggregate, summary (Summary is reserved for something narrower — below)
+
+**Summary**:
+Reserved for the *slow-refreshing half of the Day page* — window means, deltas,
+correlation, weekday means. Deliberately **not** a synonym for the contents of
+the Serving Store or for a Rollup, both of which have their own names.
+
+## Publishing
+
+**Serving Store**:
+The outward, read-only copy of the dataset that the public site reads. Holds
+only finished results — never raw Readings, never a calculation. Everything in
+it was computed on the collector host and pushed.
+_Avoid_: Mirror, replica (it holds derived rows the source never materializes,
+and deliberately omits raw Readings), cache (it is the only thing the site reads)
+
+**Publish**:
+The act of computing a set of results and writing them into the Serving Store.
+Runs on the collector host, which stays the sole source of truth.
+_Avoid_: Sync, export, push (those describe moving bytes; a Publish computes)
+
+**Live Publish**:
+The Publish pass that carries everything that moves within a day — current Wait
+Time, Live Trace, Momentum, roster open/down, today's Downtime, and the Week and
+Month windows, which include today and therefore drift all day — at the poll
+interval.
+_Avoid_: "daily data" (Daily means a *finalized* day here — see Rollup), the
+intraday sync
+
+**Daily Publish**:
+The Publish pass that carries the finalized per-day buckets and the figures too
+slow-moving for one partial day to shift — Historic means and Downtime Rates,
+weekday means, the 30-day wait/weather correlation. Runs once, after the nightly
+Rollup.
+_Avoid_: treating Week/Month as stable (both include today — see Live Publish)
+
+**Watermark**:
+The freshness stamp a Publish leaves behind: which Reading it last saw and when
+it finished. The site reads it to say honestly how current it is, so a failed
+Publish shows as stale rather than as fresh-looking old numbers.
+_Avoid_: Timestamp, last-updated (those name a browser fetch time — the
+Watermark is about the *data*)
