@@ -46,6 +46,21 @@ margin, and only defers not-yet-live YoY.
   missing/late/failed nightly therefore never deletes raw the rollups haven't yet
   absorbed. The cutoff (35 d) also sits far outside the 7-day re-roll window, so
   a day still being recomputed is never pruned.
+- **The rollups must outlive raw in the other direction too** (added
+  2026-09-26). This ADR's safety argument is that rollups are a permanent store,
+  so deleting raw loses nothing. That silently assumed the rollup builder never
+  deletes a rollup it cannot rebuild — and it did. `rollup.build_day` clears a
+  date before re-inserting, for idempotency, and the clear ran *before* the "no
+  raw data" check. For any date past the 35-day cutoff the rollup is the only
+  surviving copy, so re-rolling such a date deleted it and returned, destroying
+  irrecoverable history and reporting nothing. The defaults hid it: `run_nightly`
+  re-rolls 7 days, well inside the raw window, and `backfill_rollups` derives its
+  range from the earliest surviving Reading, so neither could reach back. A
+  `run_nightly(trailing_days=90)`, or a backfill ranging over rollups instead of
+  raw, would have erased months. The clear now happens only when there is data to
+  rebuild with; `tests/test_rollup_retention_safety.py` pins it, and fails on four
+  assertions against the old ordering.
+
 - **Index diet (one-off + durable):** dropped the redundant single-column
   `ix_reading_attraction_id`. The composite `ix_reading_attr_observed`
   `(attraction_id, observed_at)` leads with `attraction_id`, so it serves every
