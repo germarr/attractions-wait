@@ -164,12 +164,35 @@ def build_day(
     start_utc, end_utc = _local_date_bounds_utc(local_date)
     df = _read_between(start_utc, end_utc)
 
+    if df.empty:
+        # No raw readings for this date — leave whatever is stored alone.
+        #
+        # This ordering is load-bearing. Raw is pruned after RETENTION_DAYS
+        # (ADR-0005) while rollups are kept forever, so for any date older than
+        # that window the rollup is the ONLY surviving copy and raw can never
+        # regenerate it. Deleting first and returning here would silently and
+        # irrecoverably destroy it — a `run_nightly(trailing_days=90)` or a
+        # backfill that ranged over the rollups instead of raw would erase
+        # months and report nothing. A genuinely empty day (park closed,
+        # collector down) simply keeps its existing empty state, which costs
+        # nothing.
+        stored = session.execute(
+            text("SELECT count(*) FROM attractionhourly WHERE date = :d"),
+            {"d": local_date},
+        ).scalar_one()
+        if stored:
+            print(
+                f"[rollup] {local_date}: no raw readings but {stored} stored hourly "
+                "rows — raw has been pruned; keeping the rollup"
+            )
+        return
+
     # Clear this date so re-runs (trailing recompute / backfill) are idempotent.
+    # Safe only below the empty check above: we delete a date only when we have
+    # the data to rebuild it with.
     for tbl in ("attractiondaily", "attractionhourly", "parkdaily"):
         session.execute(text(f"DELETE FROM {tbl} WHERE date = :d"), {"d": local_date})
 
-    if df.empty:
-        return
     df["park_id"] = df["attraction_id"].map(aid_to_park)
 
     for park_id in park_ids:
