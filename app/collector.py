@@ -23,11 +23,17 @@ from app.models import (
     Park,
     ParkSchedule,
     Reading,
+    Show,
+    ShowTime,
     WeatherReading,
 )
 
 # Re-fetch a park's schedule at most this often (~daily).
 SCHEDULE_REFRESH_SECONDS = 20 * 3600
+
+# Re-fetch Park + Attraction coordinates at most this often. They effectively
+# never change, so this is just how fast a newly-opened ride gets geocoded.
+GEO_REFRESH_SECONDS = 6 * 3600
 
 
 def _standby_wait(entity: dict) -> int | None:
@@ -35,59 +41,163 @@ def _standby_wait(entity: dict) -> int | None:
     return entity.get("queue", {}).get("STANDBY", {}).get("waitTime")
 
 
-def _ensure_parks(session: Session, destination_id: str) -> None:
-    """Seed/backfill a Destination's parks (names, coords, destination_id).
+def _record_showtimes(session: Session, entity: dict, observed_at: str) -> int:
+    """Persist a Show's published performances for their park-local dates.
 
-    Re-fetches /children only when this Destination has no parks yet or any of
-    its parks still lacks coordinates — so it self-heals pre-existing rows
-    (e.g. Universal parks seeded before destination_id existed).
+    Idempotent on (show_id, date, start_time): the same performance is re-published
+    on every poll all day, so the first sighting wins and `first_seen` records when
+    the schedule was announced rather than when it was last echoed.
+
+    The Show row itself is seeded by _ensure_geo from /children, which is the only
+    call carrying coordinates. If it has not run yet, the showtime is skipped
+    rather than written against a missing parent.
     """
-    parks = session.exec(
-        select(Park).where(Park.destination_id == destination_id)
-    ).all()
-    if parks and all(p.latitude is not None for p in parks):
-        return
-    for p in themeparks.fetch_parks(destination_id):
+    show_id = entity.get("id")
+    if show_id is None or session.get(Show, show_id) is None:
+        return 0
+
+    written = 0
+    for slot in entity.get("showtimes") or []:
+        start = slot.get("startTime")
+        if not start:
+            continue
+        # The park-local date comes from the offset-aware timestamp itself, so a
+        # performance at 00:30 belongs to the operating date that started the
+        # evening before only if the feed says so — we do not re-derive it.
+        date = start[:10]
+        existing = session.exec(
+            select(ShowTime)
+            .where(ShowTime.show_id == show_id)
+            .where(ShowTime.date == date)
+            .where(ShowTime.start_time == start)
+        ).first()
+        if existing is not None:
+            continue
+        session.add(
+            ShowTime(
+                show_id=show_id,
+                date=date,
+                start_time=start,
+                end_time=slot.get("endTime"),
+                kind=slot.get("type", "UNKNOWN"),
+                first_seen=observed_at,
+            )
+        )
+        written += 1
+    return written
+
+
+def _ensure_geo(session: Session, destination: Destination, *, force: bool = False) -> None:
+    """Seed/backfill a Destination's Park rows and its Attractions' coordinates.
+
+    Both come from ONE recursive /children call (see themeparks.fetch_geo), so
+    geocoding the whole roster costs no extra requests beyond this refresh.
+
+    Coordinates are static, so the refresh is time-based rather than
+    missing-data-based: a ride the feed never geocodes would otherwise re-trigger
+    a fetch every single poll. A NULL `geo_fetched_at` forces a seed, which is
+    what backfills the existing roster the first time this runs; after that a new
+    ride picks up its coordinates within GEO_REFRESH_SECONDS.
+    """
+    last = destination.geo_fetched_at
+    if last is not None and not force:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
+        if age < GEO_REFRESH_SECONDS:
+            return
+
+    parks, attractions, shows = themeparks.fetch_geo(destination.id)
+    for p in parks:
         existing = session.get(Park, p["id"])
         if existing is None:
             session.add(
                 Park(
                     id=p["id"],
                     name=p["name"],
-                    destination_id=destination_id,
+                    destination_id=destination.id,
                     latitude=p["latitude"],
                     longitude=p["longitude"],
                 )
             )
         else:
             existing.name = p["name"]
-            existing.destination_id = destination_id
+            existing.destination_id = destination.id
             existing.latitude = p["latitude"]
             existing.longitude = p["longitude"]
             session.add(existing)
+
+    # Only update rows we already have: /children also lists water-park and
+    # resort-area attractions the poll loop deliberately never stores.
+    for a in attractions:
+        existing = session.get(Attraction, a["id"])
+        if existing is None:
+            continue
+        existing.latitude = a["latitude"]
+        existing.longitude = a["longitude"]
+        session.add(existing)
+
+    # Shows are seeded here rather than from /live, because /children is the only
+    # call that carries their coordinates and their park. A show with no parkId is
+    # a resort-area entity; one under a water park never matches a Park row.
+    known_parks = {p["id"] for p in parks}
+    seen_at = datetime.now(timezone.utc).isoformat()
+    for sh in shows:
+        if sh["park_id"] not in known_parks:
+            continue
+        existing = session.get(Show, sh["id"])
+        if existing is None:
+            session.add(
+                Show(
+                    id=sh["id"],
+                    name=sh["name"],
+                    park_id=sh["park_id"],
+                    last_seen=seen_at,
+                    latitude=sh["latitude"],
+                    longitude=sh["longitude"],
+                )
+            )
+        else:
+            existing.name = sh["name"] or existing.name
+            existing.park_id = sh["park_id"]
+            existing.last_seen = seen_at
+            existing.latitude = sh["latitude"]
+            existing.longitude = sh["longitude"]
+            session.add(existing)
+
+    destination.geo_fetched_at = datetime.now(timezone.utc).isoformat()
+    session.add(destination)
     session.commit()
 
 
-def _collect_destination(destination_id: str, observed_at: str) -> int:
-    """Poll one Destination and write its Readings. Returns rows written."""
+def _collect_destination(
+    destination_id: str, observed_at: str, *, reseed_geo: bool = False
+) -> tuple[int, int]:
+    """Poll one Destination. Returns (readings written, showtimes written)."""
     payload = themeparks.fetch_live(destination_id)
     written = 0
+    showtimes = 0
     with Session(engine) as session:
         # Upsert the Destination dimension straight from the live payload.
         dest_id = payload.get("id", destination_id)
         dest = session.get(Destination, dest_id)
         if dest is None:
-            session.add(Destination(id=dest_id, name=payload.get("name", "")))
+            dest = Destination(id=dest_id, name=payload.get("name", ""))
         else:
             dest.name = payload.get("name", dest.name)
-            session.add(dest)
+        session.add(dest)
         session.commit()
 
-        _ensure_parks(session, destination_id)
+        _ensure_geo(session, dest, force=reseed_geo)
 
         for entity in payload.get("liveData", []):
+            if entity.get("entityType") == "SHOW":
+                # A Show reports showtimes instead of a standby wait, so it gets no
+                # Reading. Captured here because /live is the ONLY place these
+                # appear: /entity/{show_id}/schedule returns nothing, so a
+                # performance not recorded today is unrecoverable tomorrow.
+                showtimes += _record_showtimes(session, entity, observed_at)
+                continue
             if entity.get("entityType") != "ATTRACTION":
-                continue  # Shows have no standby wait
+                continue  # restaurants and the park entity itself
             park_id = entity.get("parkId")
             if park_id is None or park_id in themeparks.EXCLUDED_PARK_IDS:
                 continue  # resort-area attraction (no park) or water park
@@ -122,7 +232,7 @@ def _collect_destination(destination_id: str, observed_at: str) -> int:
             written += 1
 
         session.commit()
-    return written
+    return written, showtimes
 
 
 def _ensure_schedules() -> int:
@@ -197,17 +307,28 @@ def _collect_weather(observed_at: str) -> int:
         return len(readings)
 
 
-def collect() -> tuple[int, int]:
-    """Run one poll across all Destinations. Returns (readings, weather rows)."""
+def collect(*, reseed_geo: bool = False) -> tuple[int, int, int]:
+    """Run one poll across all Destinations.
+
+    Returns (readings, weather rows, showtimes). `reseed_geo` bypasses the
+    GEO_REFRESH_SECONDS throttle for this poll, which is how a newly-added entity
+    kind gets backfilled without waiting out the interval or editing the database
+    by hand.
+    """
     init_db()
     observed_at = (
         datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat()
     )
 
     written = 0
+    showtimes = 0
     for destination_id in themeparks.DESTINATION_IDS:
         try:
-            written += _collect_destination(destination_id, observed_at)
+            rows, shows = _collect_destination(
+                destination_id, observed_at, reseed_geo=reseed_geo
+            )
+            written += rows
+            showtimes += shows
         except Exception as exc:  # noqa: BLE001 - isolate each destination
             print(f"[collector] destination {destination_id} failed: {exc}")
 
@@ -225,12 +346,23 @@ def collect() -> tuple[int, int]:
     except Exception as exc:  # noqa: BLE001
         print(f"[collector] schedule refresh failed: {exc}")
 
-    return written, weather_rows
+    return written, weather_rows, showtimes
 
 
 def main() -> None:
-    written, weather_rows = collect()
-    print(f"[collector] wrote {written} readings, {weather_rows} weather rows")
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m app.collector")
+    parser.add_argument(
+        "--reseed-geo",
+        action="store_true",
+        help="ignore the coordinate-refresh throttle for this poll",
+    )
+    args = parser.parse_args()
+
+    written, weather_rows, showtimes = collect(reseed_geo=args.reseed_geo)
+    extra = f", {showtimes} showtimes" if showtimes else ""
+    print(f"[collector] wrote {written} readings, {weather_rows} weather rows{extra}")
 
 
 if __name__ == "__main__":

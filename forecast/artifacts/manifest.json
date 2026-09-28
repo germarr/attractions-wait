@@ -1,0 +1,129 @@
+{
+  "origin": "2026-09-25",
+  "origin_state": {
+    "origin": "2026-09-25",
+    "trailing": {
+      "7": {
+        "12dbb85b-265f-44e6-bccf-f1faa17211fc": 3.4009011905948126,
+        "1c84a229-8862-4648-9c71-378ddd2c7693": 2.9017914131646156,
+        "267615cc-8943-4c2a-ae2c-5da728ca591f": 2.6747441287676224,
+        "288747d1-8b4f-4a64-867e-ea7c9b27bad8": 3.5290915261924205,
+        "47f90d2c-e191-4239-a466-5892ef59a88b": 3.1028882186922107,
+        "75ea578a-adc8-4116-a54d-dccb60765ef9": 2.7735460924348776,
+        "eb3f4560-2383-4a36-9152-6b3e5ed6bc57": 3.0090887931862875
+      },
+      "28": {
+        "12dbb85b-265f-44e6-bccf-f1faa17211fc": 3.303779711348698,
+        "1c84a229-8862-4648-9c71-378ddd2c7693": 2.7583280630625393,
+        "267615cc-8943-4c2a-ae2c-5da728ca591f": 2.557010285993407,
+        "288747d1-8b4f-4a64-867e-ea7c9b27bad8": 3.346873373592033,
+        "47f90d2c-e191-4239-a466-5892ef59a88b": 2.9831394671266303,
+        "75ea578a-adc8-4116-a54d-dccb60765ef9": 2.694019086397629,
+        "eb3f4560-2383-4a36-9152-6b3e5ed6bc57": 2.911622848486193
+      }
+    },
+    "all_parks": {
+      "7": 3.056007337576121,
+      "28": 2.93639611942959
+    },
+    "climatology": {
+      "12dbb85b-265f-44e6-bccf-f1faa17211fc": 3.397357503138781,
+      "1c84a229-8862-4648-9c71-378ddd2c7693": 2.8309855225337075,
+      "267615cc-8943-4c2a-ae2c-5da728ca591f": 2.7864037293265604,
+      "288747d1-8b4f-4a64-867e-ea7c9b27bad8": 3.4077057668886708,
+      "47f90d2c-e191-4239-a466-5892ef59a88b": 2.9738464888183103,
+      "75ea578a-adc8-4116-a54d-dccb60765ef9": 2.788134296091796,
+      "eb3f4560-2383-4a36-9152-6b3e5ed6bc57": 2.9881749010334757
+    },
+    "climatology_all": 3.0246583154044715
+  },
+  "trained_at": "2026-09-26T22:37:17.879779+00:00",
+  "assumptions_key": "0c154698f45f",
+  "assumptions": {
+    "target_transform": "log1p",
+    "smearing": true,
+    "trailing_windows": [
+      7,
+      28
+    ],
+    "shrink_tau_days": 3.0,
+    "profile_min_dates": 5,
+    "min_hour_coverage": 0.5,
+    "feature_set": "shrunk",
+    "ridge_alpha": 10.0,
+    "interval_level": 0.8,
+    "seed": 20260925
+  },
+  "feature_set": "shrunk",
+  "features": [
+    "park_0",
+    "park_1",
+    "park_2",
+    "park_3",
+    "park_4",
+    "park_5",
+    "park_6",
+    "hours",
+    "open_minute",
+    "party_night",
+    "is_weekend",
+    "weekday_sin",
+    "weekday_cos",
+    "horizon",
+    "persistence_shrunk",
+    "park_climatology"
+  ],
+  "ridge_alpha": 10.0,
+  "shrink_tau_days": 3.0,
+  "inner_validation_mse": 0.03426042801076896,
+  "smearing": 1.048095572911236,
+  "train_pairs": 8687,
+  "train_first_date": "2026-06-25",
+  "train_last_date": "2026-09-25",
+  "n_park_days": 644,
+  "n_attractions": 123,
+  "profile_support": {
+    "cell": 0.8081224249558564,
+    "attraction_hour": 0.12419070041200707,
+    "attraction": 0.06768687463213655,
+    "park_hour": 0.0,
+    "park": 0.0
+  },
+  "skill": {
+    "1-7": {
+      "value": 0.1156,
+      "lo": 0.0168,
+      "hi": 0.1972,
+      "n_rows": 118395,
+      "n_origins": 17,
+      "n_park_days": 770,
+      "spans_zero": false,
+      "baseline": "weekday_hour_28d"
+    },
+    "15-29": {
+      "value": 0.1615,
+      "lo": 0.0648,
+      "hi": 0.2404,
+      "n_rows": 80307,
+      "n_origins": 12,
+      "n_park_days": 539,
+      "spans_zero": false,
+      "baseline": "weekday_hour_28d"
+    },
+    "8-14": {
+      "value": 0.1738,
+      "lo": 0.0989,
+      "hi": 0.2372,
+      "n_rows": 98451,
+      "n_origins": 14,
+      "n_park_days": 651,
+      "spans_zero": false,
+      "baseline": "weekday_hour_28d"
+    }
+  },
+  "library_versions": {
+    "numpy": "2.5.0",
+    "pandas": "3.0.3",
+    "scikit-learn": "1.9.1"
+  }
+}

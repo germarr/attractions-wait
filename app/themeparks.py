@@ -2,6 +2,11 @@
 
 Two endpoints per Destination: /live (every poll) and /children (to resolve
 park names + coordinates). The app polls several Destinations.
+
+/children is recursive — one call returns a Destination's Parks *and* every
+Attraction beneath them, each with a location — so `fetch_geo` gets both from a
+single request. /live carries no coordinates, which is why they are seeded here
+rather than read off the poll payload.
 """
 
 from __future__ import annotations
@@ -34,32 +39,64 @@ def fetch_live(destination_id: str) -> dict:
     return resp.json()
 
 
-def fetch_parks(destination_id: str) -> list[dict]:
-    """Return [{id, name, latitude, longitude}] for each PARK of a Destination.
+def _coords(entity: dict) -> tuple[float | None, float | None]:
+    """Pull (latitude, longitude) out of an entity's optional location block."""
+    loc = entity.get("location") or {}
+    return loc.get("latitude"), loc.get("longitude")
 
-    Excluded (water) parks are filtered out.
+
+def fetch_geo(destination_id: str) -> tuple[list[dict], list[dict], list[dict]]:
+    """Return (parks, attractions, shows) for a Destination from ONE /children call.
+
+    Parks are [{id, name, latitude, longitude}] with excluded (water) parks
+    filtered out. Attractions are [{id, latitude, longitude}] and include only
+    those the feed actually geocodes; the caller matches them to rows it already
+    has, so attractions under a water park simply never match.
+
+    Shows are [{id, name, park_id, latitude, longitude}] — parades, fireworks and
+    stage acts. They carry `name` and `park_id` where Attractions do not, because
+    nothing else seeds a Show: an Attraction's name arrives with its standby wait
+    on every /live poll, and a Show has no wait to arrive with. The feed geocodes
+    all of them.
     """
     resp = requests.get(
         f"{BASE_URL}/entity/{destination_id}/children", timeout=TIMEOUT
     )
     resp.raise_for_status()
     children = resp.json().get("children", [])
-    parks = []
+
+    parks: list[dict] = []
+    attractions: list[dict] = []
+    shows: list[dict] = []
     for c in children:
-        if c.get("entityType") != "PARK":
-            continue
-        if c["id"] in EXCLUDED_PARK_IDS:
-            continue
-        loc = c.get("location") or {}
-        parks.append(
-            {
-                "id": c["id"],
-                "name": c["name"],
-                "latitude": loc.get("latitude"),
-                "longitude": loc.get("longitude"),
-            }
-        )
-    return parks
+        entity_type = c.get("entityType")
+        latitude, longitude = _coords(c)
+        if entity_type == "PARK":
+            if c["id"] in EXCLUDED_PARK_IDS:
+                continue
+            parks.append(
+                {
+                    "id": c["id"],
+                    "name": c["name"],
+                    "latitude": latitude,
+                    "longitude": longitude,
+                }
+            )
+        elif entity_type == "ATTRACTION" and latitude is not None:
+            attractions.append(
+                {"id": c["id"], "latitude": latitude, "longitude": longitude}
+            )
+        elif entity_type == "SHOW" and latitude is not None:
+            shows.append(
+                {
+                    "id": c["id"],
+                    "name": c.get("name", ""),
+                    "park_id": c.get("parentId"),
+                    "latitude": latitude,
+                    "longitude": longitude,
+                }
+            )
+    return parks, attractions, shows
 
 
 def fetch_schedule(park_id: str) -> list[dict]:

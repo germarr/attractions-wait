@@ -1,0 +1,4 @@
+protocol,unit,n,wait_mae,wait_r2,level_mae,level_r2,note,level_r2_inflation,assumptions
+random_row,attraction-hour,103705,5.284538725076278,0.8492393365751537,0.028960702302714594,0.9791596865423553,"Rows split at random. ~130 rows share each park-day, so the target day's own crowd level is in the training set. Not a valid estimate of anything.",1.4754388475872755,32f2a5c55c54
+random_day,park-day,8687,,,0.13565429412184485,0.7239394967759722,"Park-days split at random. No row of the target day is used, but the days either side of it are, so the model interpolates a bracketed date instead of extrapolating past the last one.",1.0908623705882614,32f2a5c55c54
+rolling_origin,park-day,2940,,,0.16040639665778395,0.6636396270462411,Trained only on dates strictly before the origin. The actual task.,1.0,32f2a5c55c54

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --line:#252a34;
+    --ink:#e8eaf0; --dim:#98a0b3; --accent:#6ea8fe;
+    /* Chart roles — the validated dark steps. Charts sit on their own surface so
+       the palette's validation (run against #1a1a19) holds exactly. */
+    --surface-1:#1a1a19; --text-primary:#ffffff; --text-secondary:#c3c2b7;
+    --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --series-4:#c98500;
+    --grid:#333330;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:"Bricolage Grotesque",system-ui,sans-serif;line-height:1.65;
+       font-size:17px}
+  nav.top{position:sticky;top:0;z-index:10;background:rgba(15,17,21,.92);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
+    padding:11px 22px;display:flex;gap:18px;align-items:center;font-size:13px}
+  nav.top a{color:var(--dim);text-decoration:none;padding:4px 9px;border-radius:6px}
+  nav.top a:hover{color:var(--ink);background:#1e222b}
+  nav.top a.active{color:var(--ink);background:#20252f}
+  nav.top .spacer{flex:1}
+
+  article{max-width:760px;margin:0 auto;padding:36px 22px 90px}
+  article h1{font-size:40px;font-weight:800;letter-spacing:-.03em;line-height:1.14;
+    margin:.2em 0 .4em}
+  article h2{font-size:15px;font-weight:600;text-transform:uppercase;
+    letter-spacing:.1em;color:var(--dim);margin:3em 0 .8em;
+    padding-top:1.4em;border-top:1px solid var(--line)}
+  article h3{font-size:23px;font-weight:700;letter-spacing:-.015em;margin:2em 0 .5em}
+  article p{margin:0 0 1.15em}
+  article strong{color:#fff;font-weight:600}
+  article em{color:var(--ink)}
+  article a{color:var(--accent)}
+  article hr{border:0;border-top:1px solid var(--line);margin:2.6em 0}
+  article ul,article ol{padding-left:1.25em;margin:0 0 1.2em}
+  article li{margin:.3em 0}
+  article blockquote{margin:1.5em 0;padding:.7em 0 .7em 1.15em;
+    border-left:3px solid var(--accent);color:#fff;font-size:20px;
+    line-height:1.5;font-weight:600;letter-spacing:-.01em}
+  article blockquote p{margin:0}
+  article code{font-family:"JetBrains Mono",monospace;font-size:.82em;
+    background:#1b1f27;padding:.13em .38em;border-radius:4px;color:#cfe0ff}
+  article pre{background:#12151b;border:1px solid var(--line);border-radius:9px;
+    padding:13px 15px;overflow-x:auto;font-size:13px;line-height:1.55}
+  article pre code{background:none;padding:0;color:var(--ink)}
+  article table{width:100%;border-collapse:collapse;font-size:14.5px;margin:1.3em 0}
+  article th{text-align:left;font-size:11px;text-transform:uppercase;
+    letter-spacing:.07em;color:var(--dim);font-weight:600;padding:7px 9px;
+    border-bottom:1px solid var(--line)}
+  article td{padding:7px 9px;border-bottom:1px solid #1e222b}
+  article tbody tr:hover td{background:#1a1e26}
+
+  /* figures */
+  figure.chart{margin:2em 0;background:var(--surface-1);border:1px solid #2a2a27;
+    border-radius:11px;padding:15px 16px 12px}
+  figure.chart .cap{font-size:12.5px;color:var(--text-secondary);
+    margin:2px 0 13px;line-height:1.5}
+  figure.chart .cap b{color:var(--text-primary);font-weight:600}
+  figure.chart svg{display:block;width:100%;height:auto;overflow:visible}
+  .legend{display:flex;flex-wrap:wrap;gap:13px;margin:11px 0 0;
+    font-size:12px;color:var(--text-secondary)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:11px;height:3px;border-radius:2px;display:inline-block}
+  .tbl-toggle{background:none;border:1px solid #2f2f2c;color:var(--text-secondary);
+    font:inherit;font-size:11px;padding:3px 9px;border-radius:99px;cursor:pointer;
+    margin-top:11px}
+  .tbl-toggle:hover{color:var(--text-primary);border-color:#4a4a45}
+  figure.chart table{font-size:12.5px;margin:11px 0 0}
+  figure.chart th,figure.chart td{padding:4px 8px}
+  .tip{position:fixed;pointer-events:none;background:#0c0c0b;
+    border:1px solid #3a3a36;border-radius:7px;padding:7px 10px;font-size:12px;
+    color:var(--text-primary);opacity:0;transition:opacity .09s;z-index:50;
+    font-family:"JetBrains Mono",monospace;line-height:1.45;white-space:nowrap}
+  .tip b{color:var(--text-primary)}
+  .tip .k{color:var(--text-secondary)}
+
+  footer{max-width:760px;margin:0 auto;padding:0 22px 70px;
+    color:var(--dim);font-size:12.5px;line-height:1.7}
+  @media(max-width:640px){
+    body{font-size:16px} article h1{font-size:31px}
+    article{padding:26px 16px 70px} figure.chart{padding:12px 10px 10px}
+  }
+</style>
+</head>
+<body data-palette="#3987e5,#d95926,#199e70,#c98500"
+      data-charts-endpoint="{{ charts_endpoint }}">
+
+<nav class="top">
+  <a href="/"{% if nav == 'planner' %} class="active"{% endif %}>Planner</a>
+  <a href="/article"{% if nav == 'route-article' %} class="active"{% endif %}>Route write-up</a>
+  <a href="/forecast"{% if nav == 'forecast' %} class="active"{% endif %}>Forecast</a>
+  <a href="/forecast/article"{% if nav == 'forecast-article' %} class="active"{% endif %}>Forecast write-up</a>
+  <span class="spacer"></span>
+  <span style="color:var(--dim);font-size:11.5px">{{ subtitle }}</span>
+</nav>
+
+<article>{{ body | safe }}</article>
+
+<footer>
+  Charts are computed from the same tables and result files the prose quotes, so a
+  number in a figure and the same number in a sentence come from one source.
+  Every figure has a data table under it. Walking distances © OpenStreetMap
+  contributors. Ride durations are estimates.
+</footer>
+
+<div class="tip" id="tip"></div>
+<script src="/static/charts.js"></script>
+{% if charts_script %}<script src="{{ charts_script }}"></script>{% endif %}
+<script>CHARTS.mount();</script>
+</body>
+</html>

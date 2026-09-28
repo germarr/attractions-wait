@@ -11,6 +11,7 @@ A "target" is either a single attraction (`<uuid>`) or a Park Average
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -1593,3 +1594,225 @@ def get_park_comparison(destination_id: str, window: str) -> dict:
         "caps": PARK_COMPARE_CAPS,
         "parks": out_parks,
     }
+
+
+# ── Geography ─────────────────────────────────────────────────────────────
+
+# IUGG mean Earth radius, metres. At theme-park scale the choice of radius
+# moves a distance by well under a metre, but fixing it here keeps the SQL and
+# Python paths agreeing to the last decimal.
+EARTH_RADIUS_M = 6371008.8
+
+# Haversine over two aliased `attraction` rows, `a` and `b`. SQLite ships the
+# math functions (>= 3.35), so the distance between any pair is a plain
+# expression over the coordinates we store — which is the whole reason there is
+# no distance table: n coordinates encode all n(n-1)/2 distances exactly, and
+# recomputing them costs microseconds. See docs/adr/0008.
+_HAVERSINE_M_SQL = f"""
+    {EARTH_RADIUS_M} * 2 * asin(sqrt(
+        power(sin(radians(b.latitude - a.latitude) / 2), 2)
+        + cos(radians(a.latitude)) * cos(radians(b.latitude))
+        * power(sin(radians(b.longitude - a.longitude) / 2), 2)
+    ))
+"""
+
+# Both endpoints must be geocoded; a ghost row the feed no longer lists is not.
+_GEOCODED = "a.latitude IS NOT NULL AND b.latitude IS NOT NULL"
+
+
+def _geo_query(sql: str, params: tuple = ()) -> list[dict]:
+    """Run a read-only geography query and return dict rows."""
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
+
+
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in metres between two coordinates."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = p2 - p1
+    dl = math.radians(lon2 - lon1)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return EARTH_RADIUS_M * 2 * math.asin(math.sqrt(h))
+
+
+def distance_between(attraction_a: str, attraction_b: str) -> float | None:
+    """Metres between two Attractions, or None if either lacks coordinates.
+
+    Straight-line, not walking distance — see docs/adr/0008.
+    """
+    rows = _geo_query(
+        f"""
+        SELECT {_HAVERSINE_M_SQL} AS meters
+        FROM attraction a JOIN attraction b
+        WHERE a.id = ? AND b.id = ? AND {_GEOCODED}
+        """,
+        (attraction_a, attraction_b),
+    )
+    return round(rows[0]["meters"], 1) if rows else None
+
+
+def nearest(attraction_id: str, n: int = 5, same_park: bool = True) -> list[dict]:
+    """The n closest Attractions to one Attraction, nearest first.
+
+    `same_park` keeps the answer to rides a guest could actually walk to; with it
+    off the result can cross parks, where straight-line distance stops meaning
+    anything a guest can act on.
+    """
+    park_clause = "AND b.park_id = a.park_id" if same_park else ""
+    return _geo_query(
+        f"""
+        SELECT b.id, b.name, b.park_id, {_HAVERSINE_M_SQL} AS meters
+        FROM attraction a JOIN attraction b
+        WHERE a.id = ? AND b.id != a.id {park_clause} AND {_GEOCODED}
+        ORDER BY meters LIMIT ?
+        """,
+        (attraction_id, n),
+    )
+
+
+def all_pairs(park_id: str | None = None, same_park_only: bool = True) -> list[dict]:
+    """Every distinct Attraction pair with its distance, closest first.
+
+    `b.id > a.id` yields each unordered pair once. Unfiltered this is ~11k rows
+    across the whole dataset and still runs in milliseconds; pass `park_id` to
+    scope it to one Park.
+    """
+    clauses, params = [_GEOCODED, "b.id > a.id"], []
+    if park_id is not None:
+        clauses.append("a.park_id = ? AND b.park_id = ?")
+        params += [park_id, park_id]
+    elif same_park_only:
+        clauses.append("a.park_id = b.park_id")
+    return _geo_query(
+        f"""
+        SELECT a.id AS a_id, a.name AS a_name, b.id AS b_id, b.name AS b_name,
+               a.park_id, {_HAVERSINE_M_SQL} AS meters
+        FROM attraction a JOIN attraction b
+        WHERE {' AND '.join(clauses)}
+        ORDER BY meters
+        """,
+        tuple(params),
+    )
+
+
+# ── Walking distance (ADR-0009) ───────────────────────────────────────────
+
+# `attractiondistance` stores each pair once, keyed a < b. Origin-anchored
+# queries need both directions, so union the mirror image back in.
+#
+# A NULL walk_meters is a pair the builder routed and rejected as implausible —
+# an unmapped connection in OSM rather than a real detour (ADR-0009). Every
+# query here drops those, so a withheld pair and an unconnected one both read as
+# "we don't know", never as a confident wrong number.
+_WALK_BOTH_WAYS = """
+    SELECT attraction_a_id AS src, attraction_b_id AS dst, walk_meters
+    FROM attractiondistance WHERE walk_meters IS NOT NULL
+    UNION ALL
+    SELECT attraction_b_id AS src, attraction_a_id AS dst, walk_meters
+    FROM attractiondistance WHERE walk_meters IS NOT NULL
+"""
+
+
+def walking_distance_between(attraction_a: str, attraction_b: str) -> float | None:
+    """Metres walked along mapped footpaths between two Attractions.
+
+    None when the pair has not been built (different Parks, or `python -m
+    app.walking` has not run for that Park), when no footpath connects them, or
+    when the route was routed and withheld as implausible (ADR-0009).
+
+    Deliberately does NOT fall back to straight-line: a caller that silently got
+    a 684 m crow-flies answer where it asked for the 877 m walk would have no way
+    to tell. Use `distance_between` when that is what you want.
+    """
+    rows = _geo_query(
+        """
+        SELECT walk_meters FROM attractiondistance
+        WHERE walk_meters IS NOT NULL
+          AND ((attraction_a_id = ? AND attraction_b_id = ?)
+            OR (attraction_a_id = ? AND attraction_b_id = ?))
+        """,
+        (attraction_a, attraction_b, attraction_b, attraction_a),
+    )
+    return rows[0]["walk_meters"] if rows else None
+
+
+def nearest_walking(attraction_id: str, n: int = 5) -> list[dict]:
+    """The n Attractions with the shortest *walk* from one Attraction.
+
+    Always within a Park, because that is the only scope walking distances are
+    built for. Empty until `app.walking` has run for that Park.
+    """
+    return _geo_query(
+        f"""
+        WITH d AS ({_WALK_BOTH_WAYS})
+        SELECT b.id, b.name, b.park_id, d.walk_meters AS meters
+        FROM d JOIN attraction b ON b.id = d.dst
+        WHERE d.src = ?
+        ORDER BY meters LIMIT ?
+        """,
+        (attraction_id, n),
+    )
+
+
+def walking_pairs(park_id: str | None = None) -> list[dict]:
+    """Every usable pair with both metrics and their ratio, shortest walk first.
+
+    Excludes pairs withheld as implausible — `walking_withheld` lists those.
+
+    The ratio is what makes the two metrics worth keeping side by side: it is
+    not a constant (see ADR-0009), so it is the column that shows where
+    straight-line distance is actively misleading.
+    """
+    where, params = "WHERE d.walk_meters IS NOT NULL", []
+    if park_id is not None:
+        where += " AND d.park_id = ?"
+        params = [park_id]
+    # The ratio is derived from the *rounded* line distance, in a CTE, so the
+    # three numbers a caller sees reconcile exactly. Dividing by the unrounded
+    # haversine instead leaves ratio != walk / line_meters on short pairs, where
+    # a tenth of a metre is a visible share of the denominator.
+    return _geo_query(
+        f"""
+        WITH pair AS (
+            SELECT a.id AS a_id, a.name AS a_name, b.id AS b_id, b.name AS b_name,
+                   d.park_id, d.walk_meters,
+                   round({_HAVERSINE_M_SQL}, 1) AS line_meters
+            FROM attractiondistance d
+            JOIN attraction a ON a.id = d.attraction_a_id
+            JOIN attraction b ON b.id = d.attraction_b_id
+            {where}
+        )
+        SELECT *, round(walk_meters / nullif(line_meters, 0), 3) AS ratio
+        FROM pair ORDER BY walk_meters
+        """,
+        tuple(params),
+    )
+
+
+def walking_withheld(park_id: str | None = None) -> list[dict]:
+    """Pairs the builder routed and rejected, with their straight-line distance.
+
+    These are the OSM coverage gaps, kept queryable so the data's blind spots can
+    be audited without re-running a build. Fixing one means mapping the missing
+    walkway upstream in OpenStreetMap, not changing anything here.
+    """
+    where, params = "WHERE d.walk_meters IS NULL", []
+    if park_id is not None:
+        where += " AND d.park_id = ?"
+        params = [park_id]
+    return _geo_query(
+        f"""
+        SELECT a.id AS a_id, a.name AS a_name, b.id AS b_id, b.name AS b_name,
+               d.park_id, round({_HAVERSINE_M_SQL}, 1) AS line_meters
+        FROM attractiondistance d
+        JOIN attraction a ON a.id = d.attraction_a_id
+        JOIN attraction b ON b.id = d.attraction_b_id
+        {where}
+        ORDER BY line_meters
+        """,
+        tuple(params),
+    )

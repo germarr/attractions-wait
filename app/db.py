@@ -33,12 +33,50 @@ def _set_sqlite_pragmas(dbapi_connection, _connection_record):
     cursor.close()
 
 
+def _widen_attractiondistance() -> None:
+    """Make `attractiondistance.walk_meters` nullable (ADR-0009).
+
+    SQLite cannot drop a NOT NULL constraint in place, and the table is derived
+    data that `python -m app.walking --rebuild` regenerates in seconds, so the
+    migration simply drops it and lets create_all lay it down again. Nothing is
+    lost that a rebuild does not restore.
+    """
+    inspector = inspect(engine)
+    if "attractiondistance" not in inspector.get_table_names():
+        return
+    columns = {c["name"]: c for c in inspector.get_columns("attractiondistance")}
+    walk = columns.get("walk_meters")
+    if walk is None or walk["nullable"]:
+        return
+    from app.models import AttractionDistance
+
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE attractiondistance"))
+    AttractionDistance.__table__.create(engine, checkfirst=True)
+    print(
+        "[db] attractiondistance rebuilt for nullable walk_meters — "
+        "run `python -m app.walking --rebuild` to repopulate"
+    )
+
+
 def _migrate() -> None:
     """Add columns/indexes that create_all() can't add to pre-existing tables."""
+    _widen_attractiondistance()
     inspector = inspect(engine)
-    if "park" not in inspector.get_table_names():
+    tables = set(inspector.get_table_names())
+    if "park" not in tables:
         return
     park_cols = {c["name"] for c in inspector.get_columns("park")}
+    attraction_cols = (
+        {c["name"] for c in inspector.get_columns("attraction")}
+        if "attraction" in tables
+        else set()
+    )
+    destination_cols = (
+        {c["name"] for c in inspector.get_columns("destination")}
+        if "destination" in tables
+        else set()
+    )
     with engine.begin() as conn:
         if "latitude" not in park_cols:
             conn.execute(text("ALTER TABLE park ADD COLUMN latitude FLOAT"))
@@ -46,6 +84,18 @@ def _migrate() -> None:
             conn.execute(text("ALTER TABLE park ADD COLUMN longitude FLOAT"))
         if "destination_id" not in park_cols:
             conn.execute(text("ALTER TABLE park ADD COLUMN destination_id VARCHAR"))
+        # Attraction coordinates (ADR-0008). Nullable: a ghost row for a ride
+        # the feed no longer lists never gets one, and distance queries skip it.
+        if "latitude" not in attraction_cols:
+            conn.execute(text("ALTER TABLE attraction ADD COLUMN latitude FLOAT"))
+        if "longitude" not in attraction_cols:
+            conn.execute(text("ALTER TABLE attraction ADD COLUMN longitude FLOAT"))
+        # NULL on an existing row means "never geocoded", which makes the first
+        # poll after this migration seed coordinates for the whole roster.
+        if "geo_fetched_at" not in destination_cols:
+            conn.execute(
+                text("ALTER TABLE destination ADD COLUMN geo_fetched_at VARCHAR")
+            )
         # Composite index for the `attraction_id IN (...) AND observed_at >= ?`
         # scan the heavy pages run; the two single-column indexes can't serve it.
         conn.execute(

@@ -59,6 +59,22 @@ Run a single poll manually to test: `.venv/bin/python -m app.collector`
 15 6 * * * cd /ABSOLUTE/PATH/TO/attractions && flock -n /tmp/attractions-rollup.lock .venv/bin/python -m app.rollup >> /tmp/attractions-rollup.log 2>&1
 ```
 
+**Walking distances** — routed over OpenStreetMap footpaths
+([ADR-0009](docs/adr/0009-osm-walking-distances.md)). Not a cron job: rebuild
+only when the attraction roster changes or the OSM data improves.
+
+```bash
+.venv/bin/python -m app.walking --rebuild      # all parks, from cached extracts
+.venv/bin/python -m app.walking --refresh-osm  # re-download extracts first
+```
+
+Extracts are cached under `data/osm/` (~6 MB). A pair whose walk is implausibly
+long for its straight-line distance is **withheld** rather than published — the
+build logs it, `stats.walking_withheld()` lists it, and distance queries return
+`None`. Those are unmapped connections in OSM upstream, not errors here (30 of
+1,856 pairs, 26 of them at Universal Studios Florida).
+Data © OpenStreetMap contributors.
+
 **Web app**:
 
 ```bash

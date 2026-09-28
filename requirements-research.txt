@@ -1,0 +1,17 @@
+# Extra dependencies for the local research packages (research_project/, forecast/).
+#
+# Installed into .venv with `uv pip install -r requirements-research.txt`, NOT with
+# `uv add`. They are kept out of pyproject.toml on purpose: that file and uv.lock
+# carry in-flight changes from other work, and `uv add` re-resolves the entire lock,
+# which would entangle the two changes beyond separating them. Move these into
+# pyproject.toml once that work has landed.
+#
+# Note `uv sync` will REMOVE anything listed here, since it is not a declared
+# project dependency. Both packages are built to survive that:
+#   - forecast/: scikit-learn is imported only inside fit(); prediction is numpy
+#     over a JSON artifact, so serving and the web app keep working without it.
+#   - markdown is already in this position today — the /article route imports it
+#     lazily and a sync would break that page. Listed here to make it visible.
+
+scikit-learn>=1.9      # fit-time only: ridge + HistGradientBoosting for the backtest arm
+markdown>=3.10         # renders ARTICLE.md in the web app (currently undeclared)
