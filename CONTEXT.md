@@ -36,8 +36,19 @@ Only present when the Attraction is operating and has a standby queue.
 _Avoid_: Waiting time, queue length
 
 **Show**:
-A scheduled performance entity in the feed (`entityType: SHOW`). Has showtimes,
-not a standby wait, and is therefore excluded from this app entirely.
+A scheduled performance entity in the feed (`entityType: SHOW`) — a parade, a
+fireworks show, a stage act. Has Showtimes, never a standby Wait Time, so it lives
+in its own `show` table rather than in `attraction` (ADR-0010). Excluded from every
+wait aggregate by construction; included in the route planner, which has to plan
+around a 14:00 parade whether or not it is queueable.
+_Avoid_: Entertainment, event (a Ticketed Event is a different thing)
+
+**Showtime**:
+One published performance of a Show on one park-local date, with the feed's own
+`type` preserved as `kind`. **Never pruned**: there is no rollup of it and no way
+to re-fetch it — the feed publishes performances for today only — so a showtime not
+captured on the day it ran is gone permanently (ADR-0010).
+_Avoid_: Performance time (that is one of the `kind` values, not the concept)
 
 **Park Average**:
 A synthetic "attraction" the dashboard offers per Park: at each moment, the mean
@@ -144,6 +155,36 @@ _Avoid_: Condition, weather type
 A derived yes/no for a Park at a moment: true when its Weather Event is a
 rain/shower/thunderstorm condition or measured precipitation is above zero.
 Computed from a Weather Reading, never stored.
+
+**Straight-Line Distance**:
+The great-circle separation between two Attractions, in metres, from the
+coordinates seeded onto each Attraction from /children (ADR-0008). Computed on
+demand — there is no table, because n coordinates already encode all n(n-1)/2
+distances. The cheap, always-available metric; use it for clustering and
+sanity checks, not for telling a guest how far they must walk.
+_Avoid_: Distance unqualified (ambiguous now that both metrics exist)
+
+**Walking Distance**:
+Metres along mapped guest walkways between two Attractions in the same Park,
+from a shortest path over an OpenStreetMap footpath graph (ADR-0009). Stored in
+`attractiondistance`, because unlike Straight-Line Distance it is *not*
+derivable from the two coordinates. The honest answer to "how far is it" —
+TRON to Tiana's is 684 m in a straight line and 877 m to walk. **Unknown for 30
+pairs** whose route is implausible for the distance: those are withheld (stored
+NULL) rather than published, because a wrong number no caller can spot is worse
+than an admitted gap.
+_Avoid_: Walk time (distance says nothing about crowds, strollers, or parades)
+
+**Detour Ratio**:
+Walking Distance ÷ Straight-Line Distance for a pair. Never below 1.0 — you
+cannot walk a shorter line than the straight one — and not a constant above it
+either: across Magic Kingdom it runs 1.04x to 2.24x. That spread is precisely why
+Walking Distance has to be routed rather than approximated by scaling the
+straight line. Big Thunder to Haunted Mansion is 174 m apart and 391 m to walk,
+because Rivers of America is in between. A ratio far above 1 on a *short* pair
+means a missing connection in OSM rather than a real detour — which is exactly
+the test used to withhold a pair's Walking Distance.
+_Avoid_: Correction factor (implies a single multiplier would work; it does not)
 
 **Rollup**:
 The precomputed per-day form of the dataset: one finalized park-local day per

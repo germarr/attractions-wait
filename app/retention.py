@@ -60,6 +60,15 @@ def run_prune(retention_days: int = RETENTION_DAYS) -> dict:
                 ),
             }
 
+        # Exactly two tables are prunable, and the list must not grow casually.
+        #
+        # `showtime` in particular is NEVER pruned. A Reading is safe to delete
+        # because the hourly rollups preserve what it contributed; a showtime has no
+        # rollup and no second copy, and the upstream feed publishes performances
+        # for today only — /entity/{show_id}/schedule returns nothing at all. So a
+        # deleted showtime row is gone for good, and the planner's record of when
+        # the fireworks actually started would silently shrink to the last 35 days.
+        # `tests/test_showtimes.py` asserts a prune leaves the table untouched.
         readings = session.execute(
             text("DELETE FROM reading WHERE observed_at < :c"), {"c": cutoff_utc}
         ).rowcount

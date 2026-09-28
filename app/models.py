@@ -1,7 +1,7 @@
 """SQLModel definitions for the wait-time dataset.
 
-Three tables: two small dimension tables (Park, Attraction) and the Reading
-fact table that holds one row per Attraction per poll.
+Three core tables: two small dimension tables (Park, Attraction) and the
+Reading fact table that holds one row per Attraction per poll.
 """
 
 from __future__ import annotations
@@ -14,6 +14,10 @@ class Destination(SQLModel, table=True):
 
     id: str = Field(primary_key=True)  # themeparks.wiki uuid
     name: str
+    # UTC ISO8601 of the last /children fetch that seeded Park + Attraction
+    # coordinates. Drives the ~6-hourly refresh in collector._ensure_geo; NULL
+    # means "never fetched", which forces a seed on the next poll.
+    geo_fetched_at: str | None = Field(default=None)
 
 
 class Park(SQLModel, table=True):
@@ -33,6 +37,44 @@ class Attraction(SQLModel, table=True):
     name: str
     park_id: str = Field(foreign_key="park.id", index=True)
     last_seen: str  # UTC ISO8601 of the most recent poll that saw this ride
+    # Seeded from /children, like Park's. Storing the two coordinates is how the
+    # dataset holds every pairwise distance: n points encode n(n-1)/2 distances
+    # exactly, so there is no distance table to build or invalidate (ADR-0008).
+    latitude: float | None = Field(default=None)
+    longitude: float | None = Field(default=None)
+
+
+class AttractionDistance(SQLModel, table=True):
+    """Walking distance between two Attractions in the same Park (ADR-0009).
+
+    Materialized, unlike the straight-line distance of ADR-0008: a routed
+    distance is *not* derivable from the two coordinates — it comes from a
+    Dijkstra over an OpenStreetMap footpath graph — so recomputing it per query
+    is not the microsecond operation haversine is.
+
+    One row per unordered pair, keyed with `attraction_a_id < attraction_b_id`
+    so a pair is stored exactly once; `stats._WALK_BOTH_WAYS` unions the mirror
+    image back in for origin-anchored queries.
+
+    Two distinct kinds of "no answer", deliberately not collapsed:
+      * **row absent** — no footpath connects the pair at all.
+      * **`walk_meters` NULL** — a route was found and rejected as implausible
+        (see `walking.SUSPECT_RATIO`), which in practice means an unmapped
+        connection in OSM. The row is kept so the rejection stays queryable
+        without a rebuild, and so a park's row count still equals n(n-1)/2 —
+        the invariant that catches rides stranded on disconnected path stubs.
+    Every query filters `walk_meters IS NOT NULL`, so both read as "unknown".
+
+    Straight-line distance is deliberately NOT stored alongside: it is one
+    haversine over columns we already have, and ADR-0008's rule is that cheaply
+    derivable values do not earn a column.
+    """
+
+    attraction_a_id: str = Field(foreign_key="attraction.id", primary_key=True)
+    attraction_b_id: str = Field(foreign_key="attraction.id", primary_key=True)
+    park_id: str = Field(foreign_key="park.id", index=True)
+    walk_meters: float | None = None  # NULL = routed, rejected as implausible
+    built_at: str  # UTC ISO8601, provenance
 
 
 class Reading(SQLModel, table=True):
@@ -177,3 +219,51 @@ class WeatherReading(SQLModel, table=True):
     weather_code: int | None = Field(default=None)  # WMO code (the Weather Event)
     wind_speed_kmh: float | None = Field(default=None)  # wind_speed_10m, km/h
     is_day: int | None = Field(default=None)  # 1 day / 0 night
+
+
+class Show(SQLModel, table=True):
+    """A scheduled performance entity: a parade, a fireworks show, a stage act.
+
+    A sibling of Attraction rather than a row in it, because an Attraction is
+    defined by reporting a standby wait and a Show never does — it has showtimes
+    instead. Collapsing the two would mean either an Attraction with a permanently
+    NULL wait or a type column that every wait query has to remember to filter on.
+
+    Coordinates come from /children like an Attraction's, so a Show can be placed
+    on the park map and routed to. They are NOT in `attractiondistance`: the
+    planner aliases each show to the nearest Attraction instead (see
+    `research_project.config.SHOWS`), which costs 20-32 m of error against the
+    park's 403 m average leg and needs no new footpath routing.
+    """
+
+    id: str = Field(primary_key=True)  # themeparks.wiki uuid
+    name: str
+    park_id: str = Field(foreign_key="park.id", index=True)
+    last_seen: str  # UTC ISO8601 of the most recent poll that saw this show
+    latitude: float | None = Field(default=None)
+    longitude: float | None = Field(default=None)
+
+
+class ShowTime(SQLModel, table=True):
+    """One published performance of a Show on one park-local date.
+
+    **Never pruned.** Raw Readings are discarded after RETENTION_DAYS because the
+    hourly rollups preserve what matters; a showtime has no rollup and no other
+    copy, and the upstream feed publishes only *today* — `/entity/{id}/schedule`
+    returns nothing for a show. So this table is the only record that will ever
+    exist of when the fireworks actually started, and losing a row loses it for
+    good. `app/retention.py` is asserted by test to leave it alone.
+
+    `kind` preserves the feed's own `showtimes[].type`, because the values mean
+    genuinely different things: "Performance Time" is a real scheduled show,
+    "Operating" is a continuously-open meet-and-greet whose "showtime" is just its
+    opening hours, and "Special Ticketed Event" belongs to a party the regular
+    ticket does not admit you to. Only the first is a show you can plan around.
+    """
+
+    show_id: str = Field(foreign_key="show.id", primary_key=True)
+    date: str = Field(primary_key=True)  # YYYY-MM-DD, park-local
+    start_time: str = Field(primary_key=True)  # ISO8601 with park offset
+    end_time: str | None = Field(default=None)
+    kind: str  # the feed's showtimes[].type, verbatim
+    first_seen: str  # UTC ISO8601 of the poll that first published this performance
