@@ -65,3 +65,10 @@ Thumbs.db
 *.log
 logs/
 tmp/
+
+# The per-park-day backtest frame: ~300 KB, regenerated in 40 s by
+# `python -m forecast.cli backtest`, and the only file in forecast/results/ that no
+# figure and no prose reads — every other one is under 8 KB and feeds a chart. The
+# rule for that directory is: commit what is consumed, ignore what is regenerable
+# and unconsumed.
+forecast/results/backtest_days.csv
